@@ -1,6 +1,8 @@
 # 🐧 Linux-Sprint
 
-> **Technical documentation** of the full configuration process for a Linux environment with Samba Active Directory, client integration, storage management, and domain administration. This project covers four sprints, each building on the previous one to create a complete, production-ready AD infrastructure.
+> **Technical documentation** of the full configuration process for a Linux environment running Samba as an Active Directory Domain Controller. This project is structured across four sprints — each one building on the previous — covering server promotion, client integration, storage management, and inter-domain trust relationships.
+
+This document serves as a step-by-step reference guide, including commands, configuration files, expected outputs, and screenshots at every key stage of the process.
 
 <br>
 
@@ -19,7 +21,7 @@
 
 # 🖥️ SPRINT 1 — Promote Domain Controller
 
-> **Goal:** Configure a fresh Ubuntu Server installation as a fully functional Samba Active Directory Domain Controller (AD DC). This involves setting the hostname, configuring network interfaces, installing the required packages, provisioning Samba AD, and verifying all services are operational.
+> **Goal:** Configure a fresh Ubuntu Server installation as a fully functional Samba Active Directory Domain Controller (AD DC). This involves setting the hostname correctly, configuring both network interfaces with static IPs, installing all required packages, provisioning the Samba AD domain, setting up time synchronization, and verifying that all services — DNS, Kerberos, LDAP, and SMB — are working correctly before any clients are added.
 
 <br>
 
@@ -27,13 +29,19 @@
 
 ## ⚙️ Step 1 — Hostname Configuration
 
-The first step is to assign a proper, permanent hostname to the server. This name will be part of the Fully Qualified Domain Name (FQDN) and is critical for Kerberos and DNS to work correctly.
+The hostname is the foundation of the server's identity within the network. In an Active Directory environment, the hostname becomes part of the server's **Fully Qualified Domain Name (FQDN)** — for example, `ls12.lab12.lan`. Both Kerberos authentication and DNS rely heavily on this name being set correctly and consistently from the very beginning. A hostname set incorrectly at this stage will cause cascade errors in later steps.
+
+The following command sets the hostname permanently at the system level:
 
 ```bash
 sudo hostnamectl set-hostname ls12
 ```
 
-> After running this command, the hostname change takes effect immediately without requiring a reboot.
+> This command writes the new hostname to `/etc/hostname` and updates the running system immediately — no reboot is required. The name `ls12` stands for **Linux Server 12**, which will later resolve to `ls12.lab12.lan` when DNS is configured.
+
+<br>
+
+The screenshot below confirms the hostname was set and is active. Notice that the shell prompt has updated to reflect the new name:
 
 <br>
 
@@ -45,14 +53,25 @@ sudo hostnamectl set-hostname ls12
 
 ## 📄 Step 2 — Edit the /etc/hosts File
 
-The `/etc/hosts` file must be updated to map the server's FQDN and short hostname to its static IP address. This is essential for local DNS resolution before any external DNS service is available.
+The `/etc/hosts` file is the system's local DNS resolver — it maps hostnames to IP addresses without needing to query an external DNS server. This is especially important during the early stages of AD setup, because Samba's provisioning tool needs to resolve its own FQDN before the DNS service is running.
+
+We open the file with:
 
 ```bash
 sudo nano /etc/hosts
 ```
 
-> Add a line in the format: `<IP_ADDRESS>  <FQDN>  <SHORT_HOSTNAME>`
-> Example: `192.168.30.40  ls12.lab12.lan  ls12`
+Inside the file, we need to add a line that maps the server's static IP address to both its FQDN and its short hostname. The format is:
+
+```
+192.168.30.40   ls12.lab12.lan   ls12
+```
+
+> Make sure the loopback entry `127.0.0.1 localhost` remains intact. The new line should use the **real static IP** of the server, not `127.0.0.1`. If the FQDN is not resolvable from `/etc/hosts`, the Samba provisioning step will fail.
+
+<br>
+
+The screenshot below shows the hosts file open in the nano editor, ready to be modified:
 
 <br>
 
@@ -60,11 +79,21 @@ sudo nano /etc/hosts
 
 <br>
 
+After saving the file with `Ctrl+O` and exiting with `Ctrl+X`, you can verify the hostname resolves correctly by running `hostname -f`, which should return the full FQDN `ls12.lab12.lan`.
+
+<br>
+
 ---
 
 ## 🌐 Step 3 — Network Configuration (Netplan)
 
-The server requires a **static IP address** on both network interfaces. We configure this using Netplan, Ubuntu's default network configuration tool. One interface (`enp0s3`) connects to the external network, and the other (`enp0s8`) serves the internal AD network.
+The Domain Controller needs **static IP addresses** on all network interfaces. Without static IPs, the server's address could change between reboots, breaking DNS records and causing client authentication to fail. Ubuntu uses **Netplan** as its network configuration layer, which writes to YAML files and passes the result to either `networkd` or `NetworkManager`.
+
+This server has two interfaces:
+- `enp0s3` — connects to the **external/WAN** network for internet access and upstream DNS
+- `enp0s8` — connects to the **internal AD network**, where domain clients will connect
+
+We open the configuration file:
 
 ```bash
 nano /etc/netplan/00-installer-config.yaml
@@ -72,7 +101,7 @@ nano /etc/netplan/00-installer-config.yaml
 
 <br>
 
-Add or modify the file with the following configuration:
+We configure both interfaces with the following YAML:
 
 ```yaml
 network:
@@ -98,7 +127,11 @@ network:
           - 127.0.0.1
 ```
 
-> **Note:** `enp0s8` uses `127.0.0.1` as its DNS, because once Samba AD is running, the DC itself will act as the DNS server for the internal domain.
+> **Why does `enp0s8` point DNS to `127.0.0.1`?** Once Samba AD is running, it takes over the DNS service for the internal domain. By pointing the internal interface at `127.0.0.1`, we ensure that the DC resolves its own domain records using its own DNS service — which is essential for Kerberos and LDAP to function correctly. The external interface still uses Cloudflare DNS (`1.1.1.1`) for internet access.
+
+<br>
+
+The screenshot below shows the Netplan file with the correct configuration for both interfaces. Note the indentation — YAML is sensitive to whitespace errors:
 
 <br>
 
@@ -106,17 +139,25 @@ network:
 
 <br>
 
+After saving the file, we check whether the configuration is valid before applying it. An invalid YAML file could disconnect the server from the network:
+
+<br>
+
 <img width="795" height="102" alt="imagen" src="https://github.com/user-attachments/assets/495f7dc0-e14f-49c1-9405-8be5337216b9" />
 
 <br>
 
-Apply the network changes to make them active:
+If the validation passes with no errors, we apply the changes:
 
 ```bash
 sudo netplan apply
 ```
 
-> If there are no errors, the command will return silently. You can verify the IP addresses with `ip a`.
+> If the command returns silently with no output, the configuration was applied successfully. You can confirm the new IP addresses are active by running `ip a` or `ip addr show`.
+
+<br>
+
+The following screenshot shows the network interfaces after the configuration is applied. Both `enp0s3` and `enp0s8` now have their assigned static IPs:
 
 <br>
 
@@ -124,7 +165,15 @@ sudo netplan apply
 
 <br>
 
+We also verify the routing table to confirm the default gateway is set correctly via `enp0s3`:
+
+<br>
+
 <img width="798" height="341" alt="imagen" src="https://github.com/user-attachments/assets/09f7ee55-1976-4699-abee-e882b24fada9" />
+
+<br>
+
+A quick connectivity test confirms the server can reach the internet through the external interface:
 
 <br>
 
@@ -136,31 +185,42 @@ sudo netplan apply
 
 ## 🔗 Step 4 — Fix DNS Resolution (/etc/resolv.conf)
 
-By default, Ubuntu manages `/etc/resolv.conf` via a systemd symlink, which can override our static DNS settings. We need to break the symlink, manually create the file, and then make it immutable.
+By default, Ubuntu links `/etc/resolv.conf` to a file managed by `systemd-resolved`. While useful in most scenarios, this symlink can be overwritten at runtime by network events, DHCP responses, or VPN connections — all of which would break our carefully configured DNS setup.
+
+The solution is to delete the symlink, create a static file, and then mark it as **immutable** so that no process can modify it.
 
 <br>
 
-**Remove the existing symbolic link:**
+**Step 4.1 — Remove the symbolic link:**
 
 ```bash
 sudo unlink /etc/resolv.conf
 ```
 
+This removes the link without deleting the target file. The system now has no `/etc/resolv.conf` until we create a new one.
+
+<br>
+
 <img width="382" height="20" alt="imagen" src="https://github.com/user-attachments/assets/596162ac-cb9f-49ff-94d7-e7bc392f9728" />
 
 <br>
 
-**Recreate the file manually with the correct DNS entries:**
+**Step 4.2 — Create a new static resolv.conf file:**
 
 ```bash
 sudo nano /etc/resolv.conf
 ```
 
-> Add the domain's nameserver and search domain. For example:
-> ```
-> nameserver 192.168.30.40
-> search lab12.lan
-> ```
+Inside the file, add the domain's nameserver (which is this server itself on the internal interface) and the search domain so that short hostnames resolve automatically:
+
+```
+nameserver 192.168.30.40
+search lab12.lan
+```
+
+<br>
+
+The screenshot below shows the completed file with the correct DNS entries:
 
 <br>
 
@@ -168,17 +228,23 @@ sudo nano /etc/resolv.conf
 
 <br>
 
-**Make the file immutable to prevent any service from overwriting it:**
+**Step 4.3 — Make the file immutable:**
 
 ```bash
 sudo chattr +i /etc/resolv.conf
 ```
 
-> The `+i` flag sets the immutable attribute. To edit it again in the future, you must first run `sudo chattr -i /etc/resolv.conf`.
+The `+i` flag (immutable) prevents any user, service, or process from modifying, renaming, or deleting this file — even as root. This guarantees our DNS configuration survives across reboots and network events.
+
+> To undo the immutable flag in the future (e.g., to update the nameserver), run: `sudo chattr -i /etc/resolv.conf`
 
 <br>
 
 <img width="407" height="28" alt="imagen" src="https://github.com/user-attachments/assets/772b9b80-3d01-4288-8f97-1aaa1ab82880" />
+
+<br>
+
+We can verify the immutable flag is set by running `lsattr /etc/resolv.conf`. The output will show `----i---------` in the attributes column, confirming the file is now protected:
 
 <br>
 
@@ -190,7 +256,7 @@ sudo chattr +i /etc/resolv.conf
 
 ## 📦 Step 5 — Install Samba and All Required Packages
 
-This command installs Samba and all the components needed for a fully functional Active Directory Domain Controller, including Kerberos (authentication), Winbind (user/group resolution), Chrony (time sync), and DNS utilities.
+This is the largest installation step of Sprint 1. We install Samba itself along with a complete set of supporting packages that cover every role the Domain Controller needs to fulfill: authentication (Kerberos), user/group resolution (Winbind), DNS management (dnsutils), time synchronization (Chrony), and filesystem access controls (ACL).
 
 ```bash
 sudo apt install -y acl attr samba samba-dsdb-modules samba-vfs-modules \
@@ -198,7 +264,29 @@ sudo apt install -y acl attr samba samba-dsdb-modules samba-vfs-modules \
   krb5-config krb5-user dnsutils chrony net-tools
 ```
 
-> During the installation, you may be prompted to enter the Kerberos realm. Enter it in **ALL CAPS** (e.g., `LAB12.LAN`).
+Here is what each package group provides:
+
+| Package | Purpose |
+|---------|---------|
+| `samba` | The core Samba server — provides SMB and AD functionality |
+| `samba-dsdb-modules` | Directory Services Database modules required for AD DC mode |
+| `samba-vfs-modules` | Virtual Filesystem modules for ACL and extended attribute support |
+| `smbclient` | Command-line SMB client for testing shares and connectivity |
+| `winbind` | Maps Windows domain users/groups to Linux UIDs/GIDs |
+| `libpam-winbind` | PAM module for authenticating Linux logins against AD |
+| `libnss-winbind` | NSS module so the OS can resolve AD users and groups |
+| `libpam-krb5` | PAM module for Kerberos-based authentication |
+| `krb5-config / krb5-user` | Kerberos client configuration and command-line tools |
+| `dnsutils` | DNS query tools (host, dig, nslookup) for verification |
+| `chrony` | NTP time synchronization daemon |
+| `acl / attr` | Linux filesystem ACL and extended attribute tools |
+| `net-tools` | Classic network tools (ifconfig, netstat) |
+
+> During the installation, you will be prompted interactively to enter the **Kerberos realm**. Type it in **ALL UPPERCASE** — for example: `LAB12.LAN`. This must match exactly what you will use when provisioning Samba. Entering it in lowercase will cause Kerberos authentication to fail.
+
+<br>
+
+The apt package manager begins resolving and downloading all dependencies:
 
 <br>
 
@@ -206,7 +294,15 @@ sudo apt install -y acl attr samba samba-dsdb-modules samba-vfs-modules \
 
 <br>
 
+The Kerberos realm configuration prompt appears during the installation process. Enter `LAB12.LAN` when asked for the default realm:
+
+<br>
+
 <img width="766" height="222" alt="imagen" src="https://github.com/user-attachments/assets/814abeca-9769-4d4e-88b5-cb9654f418b9" />
+
+<br>
+
+Enter the KDC (Key Distribution Center) hostname — this is the FQDN of our Domain Controller itself:
 
 <br>
 
@@ -214,7 +310,15 @@ sudo apt install -y acl attr samba samba-dsdb-modules samba-vfs-modules \
 
 <br>
 
+Enter the administrative server for the Kerberos realm — again, this is the DC's FQDN:
+
+<br>
+
 <img width="721" height="180" alt="imagen" src="https://github.com/user-attachments/assets/f9cc1d19-d2c8-4180-92ca-478be067531e" />
+
+<br>
+
+The Samba packages are downloaded and extracted. This may take a few minutes depending on network speed:
 
 <br>
 
@@ -222,7 +326,15 @@ sudo apt install -y acl attr samba samba-dsdb-modules samba-vfs-modules \
 
 <br>
 
+Winbind and related PAM/NSS integration modules are installed:
+
+<br>
+
 <img width="802" height="126" alt="imagen" src="https://github.com/user-attachments/assets/303dc108-ff3a-42bf-a8e3-03280eb874c8" />
+
+<br>
+
+The installation completes successfully with no errors:
 
 <br>
 
@@ -230,7 +342,15 @@ sudo apt install -y acl attr samba samba-dsdb-modules samba-vfs-modules \
 
 <br>
 
+Before starting the service, we stop and disable the three Samba daemons that are used in member-server mode (`smbd`, `nmbd`, and `winbind`). On a Domain Controller, we only need `samba-ad-dc`. Running both at the same time will cause port conflicts:
+
+<br>
+
 <img width="578" height="39" alt="imagen" src="https://github.com/user-attachments/assets/faaa0ea9-a377-43bd-8c2c-7582223b0b7f" />
+
+<br>
+
+We also unmask `samba-ad-dc`, which is masked by default to prevent accidental startup before provisioning:
 
 <br>
 
@@ -238,7 +358,15 @@ sudo apt install -y acl attr samba samba-dsdb-modules samba-vfs-modules \
 
 <br>
 
+We back up the default `/etc/samba/smb.conf` file, as the provisioning step will generate a new one. If the existing file is present, Samba's provisioning tool will refuse to proceed:
+
+<br>
+
 <img width="515" height="28" alt="imagen" src="https://github.com/user-attachments/assets/7419dc0d-2085-4af4-ad25-f76d9b3a06cd" />
+
+<br>
+
+Now we run the provisioning command. This is the central step that creates the AD database, configures DNS zones, generates Kerberos keys, and writes the final `smb.conf`:
 
 <br>
 
@@ -246,7 +374,7 @@ sudo apt install -y acl attr samba samba-dsdb-modules samba-vfs-modules \
 
 <br>
 
-**Initialize the Samba AD DC service and check its status:**
+**Now we start the Samba AD DC service and check its status:**
 
 ```bash
 sudo systemctl start samba-ad-dc
@@ -255,7 +383,15 @@ sudo systemctl status samba-ad-dc
 
 <br>
 
+The service starts and reports `active (running)`. The status output also shows the Samba version and lists the active sub-processes (smbd, winbindd, etc.):
+
+<br>
+
 <img width="425" height="43" alt="imagen" src="https://github.com/user-attachments/assets/bf81ba96-adbf-41c5-98e7-aae772bca9ca" />
+
+<br>
+
+A more detailed status view confirms all sub-processes are running and no errors appear in the journal:
 
 <br>
 
@@ -267,13 +403,21 @@ sudo systemctl status samba-ad-dc
 
 ## 🕐 Step 6 — Time Synchronization (Chrony)
 
-Kerberos authentication is extremely time-sensitive — a difference of more than 5 minutes between the DC and any client will cause authentication failures. We configure Chrony as our NTP server.
+Time synchronization is not optional in a Kerberos-based environment — it is a hard requirement. Kerberos uses timestamps as part of its security model to prevent replay attacks. If the clock difference between the DC and any client exceeds **5 minutes**, authentication tickets will be rejected and logins will fail with cryptic errors.
+
+We use **Chrony** as our NTP daemon because it integrates natively with Samba's NTP signing socket, allowing domain-joined clients to verify time synchronization is coming from a trusted source.
 
 <br>
 
-First, change the permissions on the Samba NTP signing socket so that the Chrony service can access it:
+First, we need to change the ownership and permissions on the Samba NTP socket directory so that Chrony can access it:
+
+<br>
 
 <img width="551" height="36" alt="imagen" src="https://github.com/user-attachments/assets/679df16d-dcf3-4dc0-a57d-f90c370f1872" />
+
+<br>
+
+This grants the `_chrony` group read access to the NTP signing socket that Samba creates at `/var/lib/samba/ntp_signd/`. Without this, Chrony will start but won't be able to sign NTP responses for domain clients.
 
 <br>
 
@@ -283,24 +427,44 @@ First, change the permissions on the Samba NTP signing socket so that the Chrony
 nano /etc/chrony/chrony.conf
 ```
 
-<br>
+We add three important lines:
+- `bindcmdaddress` — Binds Chrony's command interface to the internal AD network IP
+- `allow` — Permits NTP requests from all hosts on the `192.168.30.0/24` subnet
+- `ntpsigndsocket` — Points Chrony to Samba's signing socket so responses are cryptographically verified
 
-Add the following lines to point to the DNS server and allow NTP requests from the local subnet:
+The configuration file after our changes:
+
+<br>
 
 <img width="802" height="547" alt="imagen" src="https://github.com/user-attachments/assets/c45bda87-c6a5-475a-b388-c3a6e9b1752a" />
 
 <br>
 
-**Restart the service and verify it is running correctly:**
+**Restart Chrony to apply the new configuration:**
 
 ```bash
 sudo systemctl restart chronyd
+```
+
+<br>
+
+**Verify the service is running and has no errors:**
+
+```bash
 sudo systemctl status chronyd
 ```
 
 <br>
 
+The status output shows Chrony is active and has successfully connected to upstream NTP sources:
+
+<br>
+
 <img width="403" height="44" alt="imagen" src="https://github.com/user-attachments/assets/b5083434-c798-4624-af01-14ffc8df1922" />
+
+<br>
+
+A detailed status view shows the NTP sources Chrony is synchronized to, the current time offset, and the number of clients being served:
 
 <br>
 
@@ -312,33 +476,57 @@ sudo systemctl status chronyd
 
 ## ✅ Step 7 — Verify the Domain
 
-Once all services are running, we perform a series of verification checks to confirm that DNS, Kerberos, LDAP, and SMB are all working as expected.
+With all services running, we now perform a comprehensive set of verification checks. This confirms that every layer of the Active Directory stack — DNS, Kerberos, LDAP, and SMB — is working correctly before we move on to connecting clients.
 
 <br>
 
-**Verify that the domain A records resolve correctly:**
+**7.1 — Verify DNS A records**
+
+The domain itself must resolve to the DC's IP address:
 
 ```bash
 host -t A lab12.lan
 ```
 
+<br>
+
+A successful response returns the IP address of the domain controller, confirming that Samba's internal DNS is resolving domain-level queries:
+
+<br>
+
 <img width="310" height="54" alt="imagen" src="https://github.com/user-attachments/assets/247487de-c970-45fb-9eba-92fb4864e103" />
 
 <br>
+
+The server's own FQDN must also resolve:
 
 ```bash
 host -t A ls12.lab12.lan
 ```
 
+<br>
+
+This confirms that the host (A) record for the DC's FQDN was created correctly during provisioning:
+
+<br>
+
 <img width="346" height="57" alt="imagen" src="https://github.com/user-attachments/assets/ea8f1764-f027-491b-8985-17e6bb6a413d" />
 
 <br>
 
-**Verify that the Kerberos and LDAP SRV records point to the DC's FQDN:**
+**7.2 — Verify Kerberos and LDAP SRV records**
+
+Service records (SRV) tell clients where to find key AD services. These records are created automatically during provisioning. If they are missing, clients will not be able to discover the DC:
 
 ```bash
 host -t SRV _kerberos._udp.lab12.lan
 ```
+
+<br>
+
+The response should show the Kerberos service pointing to our DC at port 88:
+
+<br>
 
 <img width="515" height="38" alt="imagen" src="https://github.com/user-attachments/assets/302eea64-0d36-40fb-b392-70df9eec6fde" />
 
@@ -348,17 +536,23 @@ host -t SRV _kerberos._udp.lab12.lan
 host -t SRV _ldap._tcp.clockwork.local
 ```
 
+<br>
+
+The LDAP SRV record confirms clients can locate the directory service at port 389:
+
+<br>
+
 <img width="491" height="41" alt="imagen" src="https://github.com/user-attachments/assets/2d2826f8-0a65-426a-8e34-a5bebe87294e" />
 
 <br>
 
-**List the available network shares on the AD server:**
+**7.3 — Verify SMB shares**
+
+The presence of the default AD shares (`netlogon`, `sysvol`, and `IPC$`) confirms that Samba is running in Domain Controller mode:
 
 ```bash
 smbclient -L clockwork.local -N
 ```
-
-> You should see the default shares: `netlogon`, `sysvol`, and `IPC$`. Their presence confirms Samba is operating as an AD DC.
 
 <br>
 
@@ -366,13 +560,21 @@ smbclient -L clockwork.local -N
 
 <br>
 
-**Verify Kerberos authentication by requesting a ticket for the administrator:**
+**7.4 — Verify Kerberos authentication**
+
+Request a Kerberos Ticket-Granting Ticket (TGT) for the domain administrator. If this succeeds, the entire Kerberos authentication chain is working:
 
 ```bash
 kinit administrator@LAB12.LAN
 ```
 
+<br>
+
 <img width="603" height="58" alt="imagen" src="https://github.com/user-attachments/assets/65c2f14b-cfbd-412e-a0db-99299a01f084" />
+
+<br>
+
+Run `klist` to display the cached tickets and confirm the TGT was issued with the correct realm and expiry time:
 
 <br>
 
@@ -380,43 +582,63 @@ kinit administrator@LAB12.LAN
 
 <br>
 
-**Log in to the server via SMB to confirm end-to-end authentication works:**
+**7.5 — Log in via SMB**
+
+Using the cached Kerberos ticket, authenticate to the `netlogon` share. Success here confirms that Kerberos, SMB, and the AD database are all communicating correctly:
 
 ```bash
 sudo smbclient //localhost/netlogon -U 'administrator'
 ```
 
+<br>
+
 <img width="591" height="78" alt="imagen" src="https://github.com/user-attachments/assets/e43de933-1169-4b0c-8d7e-92bc33ab8730" />
 
 <br>
 
-**Set a secure password for the administrator account:**
+**7.6 — Set administrator password**
+
+Set a strong password for the domain administrator account. This account has full control over the domain, so it must be protected:
 
 ```bash
 sudo samba-tool user setpassword administrator
 ```
 
+<br>
+
 <img width="710" height="40" alt="imagen" src="https://github.com/user-attachments/assets/b3070cd2-72e4-494f-bd14-5ac07cbbdc5a" />
 
 <br>
 
-**Check the Samba configuration file for any syntax errors:**
+**7.7 — Validate Samba configuration**
+
+`testparm` reads the `smb.conf` file and checks it for syntax errors and configuration warnings. It also prints a summary of all active settings:
 
 ```bash
 testparm
 ```
 
+<br>
+
 <img width="450" height="666" alt="imagen" src="https://github.com/user-attachments/assets/b18f299c-b956-4958-a56d-4489de8dbbb8" />
 
 <br>
 
-**Verify the domain functional level (should show Windows AD DC 2008 or higher):**
+**7.8 — Check domain functional level**
+
+The functional level determines which AD features are available. It should report at least `Windows 2008` for a modern Samba AD DC:
 
 ```bash
 sudo samba-tool domain level show
 ```
 
+<br>
+
 <img width="500" height="107" alt="imagen" src="https://github.com/user-attachments/assets/6b95ef8c-59e5-4d96-870c-7acd9c31af06" />
+
+<br>
+
+Sprint 1 is now complete. The server is a fully operational Samba Active Directory Domain Controller, ready to accept client connections.
 
 <br>
 
@@ -426,7 +648,7 @@ sudo samba-tool domain level show
 
 # 💻 SPRINT 2 — Linux and Windows Client Integration
 
-> **Goal:** Join Linux and Windows client machines to the Samba Active Directory domain. This sprint covers installing the required client packages, configuring authentication, creating Organizational Units (OUs), managing users and groups, and enforcing Group Policy Objects (GPOs).
+> **Goal:** Join Linux desktop and server machines to the `lab12.lan` Samba Active Directory domain. This sprint walks through installing the required client-side packages, configuring Kerberos and Winbind, modifying PAM and NSS to authenticate domain users at the OS level, creating Organizational Units and user accounts, and enforcing domain-wide security policies through Group Policy Objects (GPOs).
 
 <br>
 
@@ -434,19 +656,33 @@ sudo samba-tool domain level show
 
 ## 🔄 Step 1 — Update the System
 
-Before installing any packages, ensure the system package index is up to date to avoid version conflicts.
+Before installing any packages on the client machine, we bring the system up to date. This ensures we install the latest available versions of all packages and avoids potential dependency conflicts caused by outdated package lists.
 
 ```bash
 sudo apt update
 ```
 
+<br>
+
+The package manager contacts the repositories and downloads the updated index:
+
+<br>
+
 <img width="718" height="150" alt="imagen" src="https://github.com/user-attachments/assets/6f4f6456-baf5-4cd4-997c-9f9a413a53fa" />
 
 <br>
 
+Once the index is refreshed, we upgrade any installed packages that have newer versions available:
+
 ```bash
 sudo apt upgrade
 ```
+
+<br>
+
+The upgrade process downloads and installs all available updates. On a fresh install this is usually quick, but on an older system it may take a few minutes:
+
+<br>
 
 <img width="1190" height="362" alt="imagen" src="https://github.com/user-attachments/assets/8a12c418-ac51-4d48-aa86-faed7b35be2c" />
 
@@ -456,21 +692,29 @@ sudo apt upgrade
 
 ## 🔐 Step 2 — Install and Verify SSH
 
-Installing SSH allows remote management of the client machine from any other host on the network, which is essential for administration.
+We install the OpenSSH server so that the client machine can be managed remotely. In a real environment, you would typically manage all machines remotely via SSH rather than working directly at the console. This is also useful for copying and pasting configuration files between machines.
 
 ```bash
 sudo apt-get install ssh
 ```
 
+<br>
+
 <img width="708" height="185" alt="imagen" src="https://github.com/user-attachments/assets/8745d1ea-bfbc-4469-8254-554181492278" />
 
 <br>
 
-**Verify that the SSH service is active and running:**
+After installation, we verify the SSH service is active and running. The `systemctl status` output should show `active (running)` in green:
 
 ```bash
 sudo systemctl status ssh
 ```
+
+<br>
+
+The output below confirms SSH is listening on port 22 and is set to start automatically on boot:
+
+<br>
 
 <img width="717" height="303" alt="imagen" src="https://github.com/user-attachments/assets/c11c775c-0c94-4d51-851d-04b056c48ee0" />
 
@@ -482,14 +726,14 @@ sudo systemctl status ssh
 
 ### 3.1 — Set the Hostname
 
-Assign a unique hostname to the client machine. This will be the computer account name in the domain.
+Just like the Domain Controller, the client machine needs a unique, meaningful hostname. This hostname will become the machine's computer account name in Active Directory. We set it to `lc12` (Linux Client 12):
 
 ```bash
 sudo hostnamectl set-hostname lc12
 hostname -f
 ```
 
-> `hostname -f` displays the FQDN to confirm the change was applied correctly.
+The `hostname -f` command prints the Fully Qualified Domain Name to verify the change took effect correctly:
 
 <br>
 
@@ -499,13 +743,23 @@ hostname -f
 
 ### 3.2 — Configure /etc/hosts
 
-Map the domain controller's IP to its FQDN in the local hosts file so the client can resolve it even before joining the domain.
+Before the client has been configured to use the domain's DNS server, it needs to know where to find the Domain Controller. We add the DC's FQDN and IP to `/etc/hosts` as a fallback resolution method:
 
 ```bash
 nano /etc/hosts
 ```
 
+<br>
+
+The command opens the file in the nano editor:
+
+<br>
+
 <img width="347" height="23" alt="imagen" src="https://github.com/user-attachments/assets/3ee4ed8b-172b-4ece-8d48-652026784e09" />
+
+<br>
+
+We add a line for the Domain Controller, mapping its IP to its FQDN and short name. The result should look similar to this — the client's own hostname is also mapped, which prevents warnings from some commands:
 
 <br>
 
@@ -515,13 +769,15 @@ nano /etc/hosts
 
 ### 3.3 — Test Connectivity to the Domain
 
-Before proceeding, verify that the client can reach the domain controller over the network.
+Before proceeding with any installation, we confirm the client can reach the Domain Controller over the network. A failed ping here would indicate a routing or firewall issue that must be resolved first:
 
 ```bash
 ping lab12.lan
 ```
 
-> A successful ping confirms DNS resolution and basic network connectivity to the DC.
+<br>
+
+The ping resolves `lab12.lan` to the DC's IP and receives replies, confirming both DNS resolution and basic network reachability:
 
 <br>
 
@@ -533,22 +789,37 @@ ping lab12.lan
 
 ## 🕐 Step 4 — Synchronize Time with the Domain Controller
 
-Kerberos requires that all machines in the domain have their clocks synchronized. Install `ntpdate` to sync the client clock with the DC.
+Time synchronization must be established before attempting to authenticate via Kerberos. If the client's clock differs from the DC by more than 5 minutes, every authentication attempt will fail with a `Clock skew too great` error.
+
+We install `ntpdate`, a lightweight tool for one-shot time synchronization:
 
 ```bash
 sudo apt-get install ntpdate
 ```
 
+<br>
+
 <img width="713" height="427" alt="imagen" src="https://github.com/user-attachments/assets/7dc08504-a255-4d04-8e5c-2c6236345ab2" />
 
 <br>
 
-**Query and sync the time from the domain controller:**
+We first query the DC's NTP service without making any changes, to see the current offset between the client and the DC:
 
 ```bash
 sudo ntpdate -q lab12.lan
+```
+
+Then we actually synchronize the client clock to match the DC:
+
+```bash
 sudo ntpdate lab12.lan
 ```
+
+<br>
+
+The output shows the time offset and confirms the clock has been adjusted:
+
+<br>
 
 <img width="767" height="94" alt="imagen" src="https://github.com/user-attachments/assets/7d76e4a1-b8c6-4ea3-b908-e80dd6eaa96f" />
 
@@ -558,16 +829,22 @@ sudo ntpdate lab12.lan
 
 ## 📦 Step 5 — Install Domain Integration Packages
 
-Install all the packages needed to join the Linux client to the Samba Active Directory domain.
+Now we install the full set of packages required for the client to join and authenticate against the Samba AD domain:
 
 ```bash
 sudo apt-get install samba krb5-config krb5-user winbind libpam-winbind libnss-winbind
 ```
 
-> - **samba** — Core Samba suite for SMB file sharing
-> - **krb5-config / krb5-user** — Kerberos client configuration and tools
-> - **winbind** — Resolves Windows domain users and groups on Linux
-> - **libpam-winbind / libnss-winbind** — PAM and NSS integration for AD authentication
+Here is what each package does on the client side:
+
+| Package | Purpose on Client |
+|---------|------------------|
+| `samba` | Provides the `net` command-line tool used to join the domain |
+| `krb5-config` | Sets up the Kerberos client configuration (`/etc/krb5.conf`) |
+| `krb5-user` | Provides the `kinit` and `klist` tools for testing Kerberos |
+| `winbind` | Maps domain users and groups to local Linux user IDs |
+| `libpam-winbind` | Lets PAM authenticate local logins using domain credentials |
+| `libnss-winbind` | Lets the OS resolve domain users/groups via `getent` |
 
 <br>
 
@@ -575,11 +852,23 @@ sudo apt-get install samba krb5-config krb5-user winbind libpam-winbind libnss-w
 
 <br>
 
+The installer again prompts for the Kerberos realm. Enter `LAB12.LAN` in uppercase:
+
+<br>
+
 <img width="768" height="199" alt="imagen" src="https://github.com/user-attachments/assets/b702a6f7-29b0-49a7-8575-866cc959bcf5" />
 
 <br>
 
+Enter the KDC hostname (the FQDN of our Domain Controller):
+
+<br>
+
 <img width="617" height="196" alt="imagen" src="https://github.com/user-attachments/assets/c52ba31b-8a79-4cc6-a450-1f96b6dba191" />
+
+<br>
+
+Enter the administrative Kerberos server (again, our DC's FQDN):
 
 <br>
 
@@ -591,21 +880,33 @@ sudo apt-get install samba krb5-config krb5-user winbind libpam-winbind libnss-w
 
 ## 🔑 Step 6 — Kerberos Authentication Test
 
-Before joining the domain, verify that Kerberos is configured correctly by requesting a ticket for the domain administrator.
+Before joining the domain, we verify that the Kerberos client is configured correctly by manually requesting a Ticket-Granting Ticket (TGT) for the domain administrator. This is a standalone test that does not require any domain membership:
 
 ```bash
 kinit administrator@LAB12.LAN
 ```
 
+<br>
+
+If Kerberos is configured correctly, the command will prompt for the password and return silently on success:
+
+<br>
+
 <img width="594" height="57" alt="imagen" src="https://github.com/user-attachments/assets/bbe0e8d6-a145-4305-9334-7fcaffa4f749" />
 
 <br>
 
-**List the active Kerberos tickets to confirm the TGT was granted:**
+We list the cached Kerberos tickets to confirm a TGT was granted and check its validity period:
 
 ```bash
 klist
 ```
+
+<br>
+
+The ticket cache shows the TGT for the `administrator@LAB12.LAN` principal, with its issue time and expiration time. Kerberos tickets are valid for 10 hours by default:
+
+<br>
 
 <img width="520" height="119" alt="imagen" src="https://github.com/user-attachments/assets/0405eebe-9aeb-4fe1-9341-9ea3aec70157" />
 
@@ -615,27 +916,31 @@ klist
 
 ## 📝 Step 7 — Configure Samba as a Domain Member (smb.conf)
 
-The client's Samba configuration must be set up as a domain member (not a standalone server). First, back up the existing config file.
+The client machine's Samba configuration must tell it to operate as a **domain member** (`security = ADS`) rather than a standalone server. We start by preserving the default configuration:
 
 ```bash
 mv /etc/samba/smb.conf /etc/samba/smb.conf.initial
 ```
 
+<br>
+
 <img width="491" height="20" alt="imagen" src="https://github.com/user-attachments/assets/1e1fde2e-991e-472c-b80e-cea68e656273" />
 
 <br>
 
-**Create a new smb.conf file:**
+We create a fresh, minimal `smb.conf` file with only the settings needed for domain membership:
 
 ```bash
 nano /etc/samba/smb.conf
 ```
 
+<br>
+
 <img width="422" height="17" alt="imagen" src="https://github.com/user-attachments/assets/6f795203-931c-4f2b-ac78-7b1a0f005ff3" />
 
 <br>
 
-**Add the following configuration:**
+Add the following configuration, which tells Samba to authenticate against Active Directory, sets up Winbind for user and group mapping, and enables ACL support:
 
 ```ini
 [global]
@@ -661,9 +966,11 @@ idmap config *:range = 50000-1000000
     store dos attributes = Yes
 ```
 
-> - `security = ADS` — Sets Samba to authenticate against an Active Directory server
-> - `template homedir` — Automatically creates home directories for domain users on first login
-> - `winbind use default domain = true` — Allows users to log in without specifying the domain prefix
+Key settings explained:
+- **`security = ADS`** — Instructs Samba to authenticate via Active Directory (Kerberos + LDAP)
+- **`template homedir = /home/%D/%U`** — Creates home directories like `/home/LAB12/alice` for domain users
+- **`winbind use default domain = true`** — Users can log in as `alice` instead of `LAB12\alice`
+- **`idmap config *:range`** — Defines the UID/GID range reserved for domain accounts, avoiding conflicts with local users
 
 <br>
 
@@ -673,33 +980,43 @@ idmap config *:range = 50000-1000000
 
 ---
 
-## 🔄 Step 8 — Manage Samba Services
+## 🔄 Step 8 — Manage Samba Services on the Client
 
-**Restart Samba daemons to apply the new configuration:**
+On a client machine (as opposed to the DC), we run `smbd` and `nmbd` for file sharing, but we do **not** run `samba-ad-dc`. We restart the file-sharing daemons to apply the new `smb.conf`:
 
 ```bash
 sudo systemctl restart smbd nmbd
 ```
 
+<br>
+
 <img width="448" height="22" alt="imagen" src="https://github.com/user-attachments/assets/f31b2edb-98b2-4852-8404-7b7d35c33d5e" />
 
 <br>
 
-**Stop the AD DC service (not needed on the client):**
+We explicitly stop `samba-ad-dc` since it must not run on a client machine — it is only needed on the Domain Controller itself:
 
 ```bash
 sudo systemctl stop samba-ad-dc
 ```
 
+<br>
+
 <img width="443" height="23" alt="imagen" src="https://github.com/user-attachments/assets/f3d6f5b9-de2e-4c7e-a46e-1dccca5e6ce2" />
 
 <br>
 
-**Enable smbd and nmbd to start automatically on boot:**
+We enable `smbd` and `nmbd` to start on every boot so the file-sharing services are always available:
 
 ```bash
 sudo systemctl enable smbd nmbd
 ```
+
+<br>
+
+The systemctl enable command creates the symbolic links in the systemd startup directories:
+
+<br>
 
 <img width="789" height="115" alt="imagen" src="https://github.com/user-attachments/assets/40e8baea-f2ca-4ccf-8d62-90a8cb3c05d8" />
 
@@ -709,13 +1026,15 @@ sudo systemctl enable smbd nmbd
 
 ## 🔗 Step 9 — Join the Domain
 
-This is the key step — we use `net ads join` to register the Ubuntu Desktop as a computer account in the Active Directory domain.
+This is the pivotal step of Sprint 2. The `net ads join` command communicates with the Domain Controller over Kerberos, creates a **computer account** for this machine in AD, and generates a machine secret that will be used for future authentications:
 
 ```bash
 sudo net ads join -U administrator
 ```
 
-> You will be prompted for the administrator password. On success, you'll see a message like `Joined 'LCxx' to dns domain 'lab12.lan'`.
+<br>
+
+You will be prompted for the administrator password. On success, you should see the message `Joined 'LCXX' to dns domain 'lab12.lan'`, confirming the machine account was created and the machine is now a member of the domain:
 
 <br>
 
@@ -723,23 +1042,31 @@ sudo net ads join -U administrator
 
 <br>
 
-**Verify the computer account was created in the domain:**
+**Verify from the Domain Controller** that the computer account was created. We can list all computer objects in the domain using `samba-tool`:
 
 ```bash
 sudo samba-tool computer list
 ```
 
+<br>
+
+The client machine's name should now appear in the list alongside the DC itself:
+
+<br>
+
 <img width="378" height="69" alt="imagen" src="https://github.com/user-attachments/assets/a01d1e3c-f5d4-4ff6-86ee-fa2bb2c84eaa" />
 
 <br>
 
-**Confirm the domain join is valid from the client side:**
+**Verify from the client side** that the domain join is valid. This command performs a quick sanity check against the AD server without requiring credentials:
 
 ```bash
 net ads testjoin
 ```
 
-> Expected output: `Join is OK`
+<br>
+
+The expected output is simply `Join is OK`, confirming the machine's credentials are valid and the join is still active:
 
 <br>
 
@@ -753,17 +1080,26 @@ net ads testjoin
 
 ### 10.1 — Edit the NSS Configuration
 
-NSS (Name Service Switch) needs to know to look up users and groups from Winbind (the AD source) in addition to local files.
+The **Name Service Switch (NSS)** configuration tells the operating system where to look up users, groups, and other system information. By default, it only consults local files (`/etc/passwd`, `/etc/group`). We need to add `winbind` as an additional source so domain users become visible to the OS:
 
 ```bash
 sudo nano /etc/nsswitch.conf
 ```
 
-> In the `passwd` and `group` lines, add `winbind` at the end. This tells the system to fall back to Active Directory for any user/group not found locally.
+Find the lines starting with `passwd:` and `group:`, and add `winbind` at the end of each:
+
+```
+passwd:   files systemd winbind
+group:    files systemd winbind
+```
 
 <br>
 
 <img width="425" height="28" alt="imagen" src="https://github.com/user-attachments/assets/b54fbe04-95e4-4777-ae2f-ee24d24b1a54" />
+
+<br>
+
+The full `nsswitch.conf` file after our modifications. The `winbind` entries in the `passwd` and `group` lines are what enable domain user resolution:
 
 <br>
 
@@ -773,9 +1109,13 @@ sudo nano /etc/nsswitch.conf
 
 ### 10.2 — Restart Winbind
 
+After modifying NSS, we restart Winbind so it reconnects to the Domain Controller and picks up the new configuration:
+
 ```bash
 sudo systemctl restart winbind
 ```
+
+<br>
 
 <img width="433" height="19" alt="imagen" src="https://github.com/user-attachments/assets/6bd46a2c-e4e6-4c6f-9b01-5192b10c9838" />
 
@@ -783,28 +1123,60 @@ sudo systemctl restart winbind
 
 ### 10.3 — Verify Domain User and Group Integration
 
+`wbinfo` is the command-line tool for querying Winbind directly. We use it to verify that domain users and groups are visible to the client:
+
 ```bash
 wbinfo -u    # List all domain users
 wbinfo -g    # List all domain groups
 ```
 
+<br>
+
+The output lists all domain user accounts and groups retrieved from the DC. If this is empty, Winbind is not connecting to the domain successfully:
+
+<br>
+
 <img width="322" height="364" alt="imagen" src="https://github.com/user-attachments/assets/c7bcc3ed-fb1e-4cea-932d-955fc72ce5eb" />
 
 <br>
 
-**Verify with getent that domain accounts are visible to the OS:**
+We also verify using `getent`, which queries NSS and should now return domain accounts alongside local ones:
 
 ```bash
 sudo getent passwd | grep administrator
-sudo getent group | grep 'domain admins'
-id administrator
 ```
+
+<br>
+
+The `getent` output for the administrator account shows a Unix-formatted entry with the domain-assigned UID:
+
+<br>
 
 <img width="517" height="33" alt="imagen" src="https://github.com/user-attachments/assets/95b19adc-a219-4149-b6e1-7b84199324b3" />
 
 <br>
 
+```bash
+sudo getent group | grep 'domain admins'
+```
+
+<br>
+
+The `Domain Admins` group is visible with its assigned GID:
+
+<br>
+
 <img width="493" height="36" alt="imagen" src="https://github.com/user-attachments/assets/29377847-b312-491b-b851-243d74657580" />
+
+<br>
+
+```bash
+id administrator
+```
+
+<br>
+
+The `id` command shows the administrator's UID, primary GID, and all supplementary groups — including `Domain Admins`:
 
 <br>
 
@@ -816,13 +1188,11 @@ id administrator
 
 ## 👥 Step 11 — Configure PAM for Domain Login
 
-PAM (Pluggable Authentication Modules) must be configured to allow domain users to log in and automatically create home directories on first login.
+**PAM (Pluggable Authentication Modules)** is the Linux subsystem responsible for authentication. We configure it to allow domain users to log in and to automatically create their home directory on first login.
 
 ```bash
 sudo pam-auth-update
 ```
-
-> Select the options for Winbind and automatic home directory creation.
 
 <br>
 
@@ -830,27 +1200,35 @@ sudo pam-auth-update
 
 <br>
 
+An interactive menu appears. We select the Winbind and automatic home directory options using the spacebar, then confirm with Enter:
+
+<br>
+
 <img width="757" height="445" alt="imagen" src="https://github.com/user-attachments/assets/9550ef33-07bc-4535-a19a-4452f580b0a6" />
 
 <br>
 
-**Edit the /etc/pam.d/common-account file to automatically create home directories:**
+We also manually add home directory auto-creation to the PAM account file:
 
 ```bash
 sudo nano /etc/pam.d/common-account
 ```
 
+<br>
+
 <img width="487" height="24" alt="imagen" src="https://github.com/user-attachments/assets/d62dd0bb-be12-4df5-a74a-24218b4482de" />
 
 <br>
 
-Add this line at the end of the file:
+Add this line at the very end of the file. It creates the user's home directory from `/etc/skel` on first login with secure permissions:
 
 ```
 session required pam_mkhomedir.so skel=/etc/skel/ umask=0022
 ```
 
-> This ensures that when a domain user logs in for the first time, a personal home directory is automatically created using the default skeleton files.
+<br>
+
+The full `common-account` file after adding the `pam_mkhomedir` line at the bottom:
 
 <br>
 
@@ -858,19 +1236,33 @@ session required pam_mkhomedir.so skel=/etc/skel/ umask=0022
 
 <br>
 
-**Test login with a domain account via the terminal:**
+**Test terminal login with a domain account:**
 
 ```bash
 su administrator
 ```
 
+<br>
+
+The `su` command switches to the domain administrator account. If PAM and Winbind are correctly configured, you will be prompted for the domain password and dropped into a shell as the domain user:
+
+<br>
+
 <img width="314" height="56" alt="imagen" src="https://github.com/user-attachments/assets/09dc6311-0fe8-4b0a-9486-51756e6f3be9" />
 
 <br>
 
-**Authenticate with GUI — the login screen should now accept domain credentials:**
+**Test graphical (GUI) login with domain credentials:**
+
+The following screenshots show the GUI login flow on Ubuntu Desktop. The login screen now accepts domain usernames. We enter the domain administrator credentials:
+
+<br>
 
 <img width="376" height="304" alt="imagen" src="https://github.com/user-attachments/assets/f93ecbd0-f72b-45df-8b78-7bd7f78fc32b" />
+
+<br>
+
+The password prompt accepts domain credentials, and the session is created:
 
 <br>
 
@@ -878,7 +1270,15 @@ su administrator
 
 <br>
 
+The home directory `/home/LAB12/administrator` is automatically created on first login:
+
+<br>
+
 <img width="489" height="74" alt="imagen" src="https://github.com/user-attachments/assets/1405ea13-b647-4546-9346-570b5dd731b6" />
+
+<br>
+
+The desktop loads successfully as the domain administrator user. Notice the username displayed in the top-right corner reflects the domain account:
 
 <br>
 
@@ -886,7 +1286,15 @@ su administrator
 
 <br>
 
+Additional GUI verification — the file manager opens and the home directory is populated with default skeleton files:
+
+<br>
+
 <img width="609" height="481" alt="imagen" src="https://github.com/user-attachments/assets/5ea4733b-6137-4e58-b857-f14c1d1ab896" />
+
+<br>
+
+System settings reflect the domain user identity:
 
 <br>
 
@@ -894,7 +1302,15 @@ su administrator
 
 <br>
 
+The user's desktop preferences are initialized from the skeleton configuration:
+
+<br>
+
 <img width="611" height="477" alt="imagen" src="https://github.com/user-attachments/assets/a82d7d9a-8a55-4cd6-b5c3-d98ce2220a9b" />
+
+<br>
+
+User account details visible in system settings:
 
 <br>
 
@@ -906,15 +1322,23 @@ su administrator
 
 ## 👤 Step 12 — Create Users and Groups in Active Directory
 
-Now we populate the domain with user accounts, security groups, and Organizational Units (OUs) to represent our organization's structure.
+Now we populate the domain with a realistic structure of user accounts, security groups, and Organizational Units (OUs). This mirrors how a real organization would structure its directory.
 
 <br>
 
-### 12.1 — Create Users
+### 12.1 — Create User Accounts
+
+We create three users — one assigned to IT, and two assigned to the Students OU:
 
 ```bash
 sudo samba-tool user create Alice --userou="OU=IT_Department"
 ```
+
+<br>
+
+Alice is created successfully. Her account is placed in the IT_Department OU:
+
+<br>
 
 <img width="663" height="77" alt="imagen" src="https://github.com/user-attachments/assets/23515350-6a24-4771-aafb-fa9e324e0f74" />
 
@@ -924,6 +1348,12 @@ sudo samba-tool user create Alice --userou="OU=IT_Department"
 sudo samba-tool user create Bob --userou="OU=Students"
 ```
 
+<br>
+
+Bob is created and placed in the Students OU:
+
+<br>
+
 <img width="601" height="70" alt="imagen" src="https://github.com/user-attachments/assets/44ad168f-9be1-4157-9505-365f9fc04114" />
 
 <br>
@@ -932,15 +1362,25 @@ sudo samba-tool user create Bob --userou="OU=Students"
 sudo samba-tool user create Charlie --userou="OU=Students"
 ```
 
+<br>
+
+Charlie is created alongside Bob in the Students OU:
+
+<br>
+
 <img width="626" height="68" alt="imagen" src="https://github.com/user-attachments/assets/5946eb66-0bab-4c26-b946-3d219d400e91" />
 
 <br>
 
-### 12.2 — Create Groups
+### 12.2 — Create Security Groups
+
+Security groups are used to assign permissions to multiple users at once. Instead of granting permissions user by user, we grant them to a group and then add users to that group:
 
 ```bash
 sudo samba-tool group add IT_Admins
 ```
+
+<br>
 
 <img width="435" height="25" alt="image" src="https://github.com/user-attachments/assets/551a9e87-754e-4e29-839c-983f36c265ad" />
 
@@ -950,18 +1390,37 @@ sudo samba-tool group add IT_Admins
 sudo samba-tool group add Students
 ```
 
+<br>
+
 <img width="427" height="23" alt="image" src="https://github.com/user-attachments/assets/8cdadbf0-1d3b-4066-b87d-35a172025cc7" />
 
 <br>
 
 ### 12.3 — Add Users to Groups
 
+With groups and users created, we assign memberships:
+
 ```bash
 sudo samba-tool group addmembers IT_Admins Alice
+```
+
+<br>
+
+Alice is added to the IT_Admins group. She will now inherit any permissions assigned to that group:
+
+<br>
+
+<img width="542" height="27" alt="image" src="https://github.com/user-attachments/assets/982c6b7c-ad7d-4d5d-a216-e356fe25215e" />
+
+<br>
+
+```bash
 sudo samba-tool group addmembers Students Bob,Charlie
 ```
 
-<img width="542" height="27" alt="image" src="https://github.com/user-attachments/assets/982c6b7c-ad7d-4d5d-a216-e356fe25215e" />
+<br>
+
+Both Bob and Charlie are added to the Students group in a single command:
 
 <br>
 
@@ -971,19 +1430,35 @@ sudo samba-tool group addmembers Students Bob,Charlie
 
 ### 12.4 — Create the Organizational Unit (OU) Hierarchy
 
-OUs are containers in Active Directory used to organize users, groups, and computers. They also allow GPOs to be applied selectively to different parts of the organization.
+OUs are the building blocks of directory structure in Active Directory. They act as folders that contain users, groups, computers, and even other OUs. A well-designed OU structure makes it easy to delegate administrative control and apply GPOs to specific departments:
 
 ```bash
 sudo samba-tool ou add "OU=IT_Department,DC=lab12,DC=lan"
-sudo samba-tool ou add "OU=Students,DC=lab12,DC=lan"
-sudo samba-tool ou add "OU=HR_Department,DC=lab12,DC=lan"
 ```
+
+<br>
+
+The IT_Department OU is created at the root of the domain:
+
+<br>
 
 <img width="628" height="36" alt="image" src="https://github.com/user-attachments/assets/6fe6093e-7216-42ad-8c34-1d458ac5f202" />
 
 <br>
 
+```bash
+sudo samba-tool ou add "OU=Students,DC=lab12,DC=lan"
+```
+
+<br>
+
 <img width="593" height="32" alt="image" src="https://github.com/user-attachments/assets/c8d3c92f-49c6-4597-9eaf-11d89a28683c" />
+
+<br>
+
+```bash
+sudo samba-tool ou add "OU=HR_Department,DC=lab12,DC=lan"
+```
 
 <br>
 
@@ -995,17 +1470,23 @@ sudo samba-tool ou add "OU=HR_Department,DC=lab12,DC=lan"
 
 ## 🔒 Step 13 — Group Policy Objects (GPOs)
 
-GPOs allow administrators to enforce security and configuration settings across all machines and users in the domain from a central location.
+Group Policies allow administrators to enforce security settings and restrictions across all users and machines in the domain from a single, central location. We implement two key policies: a password complexity policy and an account lockout policy.
 
 <br>
 
 ### 13.1 — Password Policy
 
-Enforce a minimum password length of 8 characters with complexity requirements enabled for all domain users:
+We set a domain-wide minimum password length of 8 characters and require passwords to meet complexity requirements (mix of uppercase, lowercase, numbers, and symbols):
 
 ```bash
 sudo samba-tool domain passwordsettings set --min-pwd-length=8 --complexity=on
 ```
+
+<br>
+
+The command reports success and shows the updated policy values:
+
+<br>
 
 <img width="784" height="130" alt="imagen" src="https://github.com/user-attachments/assets/4d484726-1ff2-42cd-a799-8e92e9b7e8e8" />
 
@@ -1013,47 +1494,53 @@ sudo samba-tool domain passwordsettings set --min-pwd-length=8 --complexity=on
 
 ### 13.2 — Account Lockout Policy
 
-To mitigate brute-force attacks, configure an account lockout policy: **3 failed login attempts trigger a 5-minute account lockout**.
+The account lockout policy protects against brute-force password attacks. After 3 failed login attempts, the account is locked for 5 minutes — enough to stop automated attacks while minimizing disruption for legitimate users who mistype their password.
 
-**Step 1 — Set the lockout threshold (3 attempts):**
+**Set the lockout threshold to 3 failed attempts:**
 
 ```bash
 sudo samba-tool domain passwordsettings set --account-lockout-threshold=3
 ```
 
+<br>
+
 <img width="742" height="55" alt="imagen" src="https://github.com/user-attachments/assets/1585bde3-d978-49ba-ace5-3532cb3874c3" />
 
 <br>
 
-**Step 2 — Set the lockout duration (5 minutes):**
+**Set the lockout duration to 5 minutes.** During this period, the account cannot be used even with the correct password:
 
 ```bash
 sudo samba-tool domain passwordsettings set --account-lockout-duration=5
 ```
 
+<br>
+
 <img width="731" height="53" alt="imagen" src="https://github.com/user-attachments/assets/f3d5a0e6-1a31-4a10-b6f2-5c880cb3b099" />
 
 <br>
 
-**Step 3 — Set the reset counter timer (5 minutes):**
+**Set the reset counter to 5 minutes.** This means the failed-attempt counter resets after 5 minutes of no failed attempts, so a user who makes 2 mistakes and then waits 5 minutes starts fresh:
 
 ```bash
 sudo samba-tool domain passwordsettings set --reset-account-lockout-after=5
 ```
 
+<br>
+
 <img width="731" height="51" alt="imagen" src="https://github.com/user-attachments/assets/7880d848-5a6c-4534-a8c2-bc1a031c7efb" />
 
 <br>
 
-### 13.3 — Verification and Testing
+### 13.3 — Policy Verification and Testing
 
-**Account Lockout Test:**
+**Account Lockout Test — Brute Force Simulation:**
 
-To validate that the policy is working, a brute-force simulation was performed:
+To confirm the lockout policy is active, we deliberately attempted to log in as **Bob** with an incorrect password. The steps were:
 
-1. Attempted to log in with user **Bob** using an incorrect password.
-2. Repeated the failed login attempt **3 times** to trigger the lockout threshold.
-3. On the **4th attempt**, the system displayed an account lockout message, confirming the policy is active:
+1. Entered Bob's username with a wrong password on the login screen.
+2. Repeated the failed attempt 3 times to hit the threshold.
+3. On the 4th attempt, the system refused to show a password prompt and displayed a lockout error:
 
 <br>
 
@@ -1061,25 +1548,39 @@ To validate that the policy is working, a brute-force simulation was performed:
 
 <br>
 
-4. After waiting **5 minutes**, the account was automatically unlocked — confirming the lockout duration setting is also functioning correctly.
+4. After waiting exactly 5 minutes, Bob's account was automatically unlocked and a login with the correct password succeeded — confirming both the lockout duration and the auto-unlock mechanism are working correctly.
 
 <br>
 
-**Verify the OU structure:**
+**Verify the OU structure is intact:**
 
 ```bash
 sudo samba-tool ou list
 ```
 
+<br>
+
+All three OUs are listed, confirming they were created successfully:
+
+<br>
+
 <img width="358" height="104" alt="imagen" src="https://github.com/user-attachments/assets/6ffa1252-2d2b-4f6d-9c2f-05d5d44005c0" />
 
 <br>
 
-**Audit user placement and check Distinguished Names:**
+**Audit user placement using Distinguished Names:**
+
+The Distinguished Name (DN) uniquely identifies an object's full path in the directory tree. We verify that Alice was correctly placed under the IT_Department OU:
 
 ```bash
 sudo samba-tool user show Alice | grep dn
 ```
+
+<br>
+
+The DN output confirms Alice's full path in the AD hierarchy:
+
+<br>
 
 <img width="507" height="106" alt="imagen" src="https://github.com/user-attachments/assets/e89984d2-9745-4b93-9303-36af4480e04e" />
 
@@ -1092,15 +1593,27 @@ sudo samba-tool group listmembers IT_Admins
 sudo samba-tool group listmembers Students
 ```
 
+<br>
+
+The output confirms Alice is in IT_Admins, and both Bob and Charlie are in Students:
+
+<br>
+
 <img width="591" height="86" alt="imagen" src="https://github.com/user-attachments/assets/ae88b763-ca0b-4359-b2f5-72bc19de5bca" />
 
 <br>
 
-**Review all active security policy settings:**
+**Display the full security policy summary:**
 
 ```bash
 sudo samba-tool domain passwordsettings show
 ```
+
+<br>
+
+This shows all active password and lockout policy values in one view — a useful audit trail:
+
+<br>
 
 <img width="513" height="205" alt="imagen" src="https://github.com/user-attachments/assets/49879fd8-6c84-42f0-87e1-858cfdb4bffc" />
 
@@ -1112,7 +1625,7 @@ sudo samba-tool domain passwordsettings show
 
 # 💾 SPRINT 3 — Storage, Shares & Permissions
 
-> **Goal:** Add dedicated storage to the Domain Controller, create a structured directory hierarchy for departmental file shares, configure Samba network shares with appropriate access controls, and apply advanced ACL-based permissions to protect sensitive data.
+> **Goal:** Expand the Domain Controller's storage by adding a dedicated data disk, create a department-based directory hierarchy on that disk, configure Samba network shares with group-based access controls for each department, install ACL support for fine-grained permission management, and learn the key Linux tools for monitoring and managing system processes.
 
 <br>
 
@@ -1120,21 +1633,35 @@ sudo samba-tool domain passwordsettings show
 
 ## 🔍 Connectivity Verification
 
-Before making any changes, confirm the domain is healthy and the DC is reachable.
+Before making any changes to the server, we verify that the domain is still healthy and the DC is responding correctly.
+
+**Check the domain status directly:**
 
 ```bash
 sudo samba-tool domain info 127.0.0.1
 ```
 
+<br>
+
+The output shows the domain name, realm, and DC role. This confirms the AD services are running correctly:
+
+<br>
+
 <img width="458" height="148" alt="image" src="https://github.com/user-attachments/assets/ae1e256c-0dde-47e5-83f4-61b10f8e999d" />
 
 <br>
 
-**Ping the domain to verify DNS resolution is working:**
+**Verify DNS resolution with a ping:**
 
 ```bash
 ping -c 3 lab12.lan
 ```
+
+<br>
+
+Three successful ping replies confirm that DNS is resolving the domain name correctly and the network is reachable:
+
+<br>
 
 <img width="597" height="152" alt="image" src="https://github.com/user-attachments/assets/6c2d4c83-c52f-43b6-b225-90d6383f42aa" />
 
@@ -1144,43 +1671,56 @@ ping -c 3 lab12.lan
 
 ## 1. 🗄️ Storage Management
 
-### Step 1.1 — Create the New Disk
+### Step 1.1 — Create the New Virtual Disk
 
-Add a new virtual disk to the server via the hypervisor settings. We recommend **20GB or 40GB** for a lab environment.
+In the hypervisor (VirtualBox or VMware), we add a new virtual hard disk to the Domain Controller VM. This disk will be dedicated exclusively to Samba file shares, separating data from the system disk for better performance and easier backups. A size of **20GB** is sufficient for a lab environment:
+
+<br>
 
 <img width="1025" height="595" alt="image" src="https://github.com/user-attachments/assets/361a78ba-7147-4173-ab4d-44d88ed749b7" />
 
 <br>
 
-### Step 1.2 — Identify the New Disk
+### Step 1.2 — Identify the New Disk in the OS
 
-After adding the disk, confirm it is visible to the operating system. The new disk will typically appear as `/dev/sdb`.
+After adding the disk in the hypervisor and booting the VM, Linux automatically detects the new disk. We use `lsblk` to list all block devices and confirm the new disk appeared:
 
 ```bash
 lsblk
 ```
 
+<br>
+
+The output shows `sda` (the existing system disk) and the newly added `sdb` (20GB, unpartitioned). This confirms the hypervisor passed the disk to the VM successfully:
+
+<br>
+
 <img width="582" height="230" alt="image" src="https://github.com/user-attachments/assets/c4e68074-9f56-497b-b1a0-f4975e2638fb" />
 
 <br>
 
-### Step 1.3 — Create a Partition Table
+### Step 1.3 — Create a Partition Table with fdisk
 
-Use `fdisk` to create a new partition on the disk.
+`fdisk` is the traditional Linux disk partitioning tool. We use it to initialize the new disk and create a single partition that spans the entire disk:
 
 ```bash
 sudo fdisk /dev/sdb
 ```
 
-Follow the interactive prompt with these commands:
+Follow the interactive prompt in sequence:
 
-| Command | Action |
-|---------|--------|
-| `n` | Create a new partition |
-| `p` | Set it as a primary partition |
-| `1` | Assign partition number 1 |
-| `Enter` × 2 | Accept the default start and end sectors (use the full disk) |
-| `w` | Write the changes and exit |
+| Command | What it does |
+|---------|--------------|
+| `n` | Start creating a new partition |
+| `p` | Choose "primary" partition type |
+| `1` | Set partition number to 1 |
+| `Enter` | Accept the default first sector (beginning of disk) |
+| `Enter` | Accept the default last sector (end of disk — uses full disk) |
+| `w` | Write the partition table to disk and exit |
+
+<br>
+
+The screenshot below shows the full fdisk session. Note the confirmation message at the end that the partition table was written successfully:
 
 <br>
 
@@ -1188,13 +1728,19 @@ Follow the interactive prompt with these commands:
 
 <br>
 
-### Step 1.4 — Format the Filesystem
+### Step 1.4 — Format the Partition as EXT4
 
-Samba requires **EXT4** to correctly support ACLs (Access Control Lists) and extended attributes used by Active Directory.
+Samba requires the **EXT4** filesystem for two critical reasons: it natively supports **POSIX ACLs** (Access Control Lists) and **extended attributes** (xattrs), both of which Samba uses to store Windows permission data on Linux. FAT or NTFS-based filesystems are not suitable here.
 
 ```bash
 sudo mkfs.ext4 /dev/sdb1
 ```
+
+<br>
+
+The formatter creates the filesystem, generates a UUID, writes the superblock, and allocates inodes. This UUID will be used to permanently mount the disk:
+
+<br>
 
 <img width="520" height="182" alt="image" src="https://github.com/user-attachments/assets/aaa52e39-9562-45f1-9d2f-fd68049fb510" />
 
@@ -1202,41 +1748,52 @@ sudo mkfs.ext4 /dev/sdb1
 
 ### Step 1.5 — Configure a Permanent Mount Point
 
-**1. Create the mount directory:**
+We want this disk to be automatically mounted at the same location every time the system boots. Using the disk's UUID (rather than its device path `/dev/sdb1`) makes the mount configuration resilient to disk order changes.
+
+**Create the mount directory:**
 
 ```bash
 sudo mkdir -p /srv/samba/Data
 ```
 
+<br>
+
 <img width="391" height="27" alt="image" src="https://github.com/user-attachments/assets/631bf1b6-dcb7-47c5-8f64-019291f3122c" />
 
 <br>
 
-**2. Find the disk UUID for persistent mounting:**
-
-Using the UUID (rather than the device path `/dev/sdb1`) ensures the mount point remains consistent even if the disk order changes after a reboot.
+**Get the UUID of the new partition:**
 
 ```bash
 sudo blkid /dev/sdb1
 ```
 
+<br>
+
+The output shows the UUID, filesystem type, and label. Copy the UUID string — we will paste it into `/etc/fstab` in the next step:
+
+<br>
+
 <img width="802" height="55" alt="image" src="https://github.com/user-attachments/assets/43f930b2-e609-4df1-904d-330d894943a0" />
 
 <br>
 
-**3. Add the entry to /etc/fstab:**
+**Add the mount entry to /etc/fstab:**
 
 ```bash
 sudo nano /etc/fstab
 ```
 
-Add the following line at the end of the file (replace `your-uuid-here` with the actual UUID):
+Add this line at the end of the file, replacing `your-uuid-here` with the UUID from the previous step:
 
 ```
 UUID=your-uuid-here /srv/samba/Data ext4 user_xattr,acl,barrier=1 1 1
 ```
 
-> The options `user_xattr` and `acl` are required by Samba for extended attribute and ACL support.
+The mount options are important:
+- `user_xattr` — Enables user-defined extended attributes (required for Samba to store Windows metadata)
+- `acl` — Enables POSIX Access Control Lists (required for Samba to enforce AD permissions)
+- `barrier=1` — Enables write barriers for data integrity protection
 
 <br>
 
@@ -1244,12 +1801,18 @@ UUID=your-uuid-here /srv/samba/Data ext4 user_xattr,acl,barrier=1 1 1
 
 <br>
 
-**4. Mount all filesystems from fstab and verify:**
+**Apply the fstab configuration immediately:**
 
 ```bash
 sudo mount -a
 df -h /srv/samba/Data
 ```
+
+<br>
+
+`mount -a` mounts all entries in `/etc/fstab`. The `df` command then confirms the new disk is mounted and shows the available space:
+
+<br>
 
 <img width="490" height="62" alt="image" src="https://github.com/user-attachments/assets/4b3b45c1-ff0c-4920-88fd-f18b69079795" />
 
@@ -1257,41 +1820,67 @@ df -h /srv/samba/Data
 
 ### Storage Verification Checks
 
-**1. Verify devices and partitions:**
+We run a series of checks to confirm the storage is set up correctly before using it for shares.
+
+**Verify block devices and partition structure:**
 
 ```bash
 lsblk
 ```
 
+<br>
+
+`sdb1` now shows as a mounted partition under `/srv/samba/Data`, confirming the mount is active:
+
+<br>
+
 <img width="620" height="298" alt="image" src="https://github.com/user-attachments/assets/17e3fa2e-3e02-481e-8e41-f37aa518d58e" />
 
 <br>
 
-**2. Check mount point status and available space:**
+**Check available disk space at the mount point:**
 
 ```bash
 df -h /srv/samba/Data
 ```
 
+<br>
+
+The output shows the total size, used space, available space, and usage percentage:
+
+<br>
+
 <img width="510" height="66" alt="image" src="https://github.com/user-attachments/assets/d3e1f9a9-211c-4e5a-a253-958bdb5def92" />
 
 <br>
 
-**3. Confirm persistence (entry exists in fstab):**
+**Confirm the fstab entry is correct:**
 
 ```bash
 cat /etc/fstab | grep Data
 ```
 
+<br>
+
+The fstab entry with the UUID and correct mount options is displayed, confirming the disk will remount automatically after a reboot:
+
+<br>
+
 <img width="851" height="40" alt="image" src="https://github.com/user-attachments/assets/3c3c326b-c035-432a-8f5b-ea7394c57ef4" />
 
 <br>
 
-**4. Validate that ACL and extended attribute options are active:**
+**Validate the ACL and extended attribute flags are active:**
 
 ```bash
 findmnt -n -o OPTIONS /srv/samba/Data
 ```
+
+<br>
+
+The output lists all active mount options. We confirm `acl` and `user_xattr` are present — without these, Samba will not be able to enforce AD permissions on files:
+
+<br>
 
 <img width="517" height="47" alt="image" src="https://github.com/user-attachments/assets/ef509aaa-9e02-4ea4-93d9-5f1e422a4a53" />
 
@@ -1301,9 +1890,9 @@ findmnt -n -o OPTIONS /srv/samba/Data
 
 ## 2. 📁 Directory Structure and Network Shares
 
-### Step 2.1 — Create the Directory Hierarchy
+### Step 2.1 — Create the Department Directory Hierarchy
 
-Create separate directories for each department's file share. These folders will be the targets of our Samba share definitions.
+We create a folder for each department that will have its own Samba share with different access rights:
 
 ```bash
 sudo mkdir -p /srv/samba/Data/FinanceDocs
@@ -1311,15 +1900,27 @@ sudo mkdir -p /srv/samba/Data/HRDocs
 sudo mkdir -p /srv/samba/Data/Public
 ```
 
+<br>
+
+All three directories are created on the newly mounted data disk:
+
+<br>
+
 <img width="555" height="86" alt="image" src="https://github.com/user-attachments/assets/aadd8f37-c0b1-4d56-96fa-7dfe4c1051aa" />
 
 <br>
 
-**Verify the directory structure was created correctly:**
+**Verify the directory structure:**
 
 ```bash
 ls -l /srv/samba/Data
 ```
+
+<br>
+
+The listing shows all three directories with their current ownership (root:root) and permissions. We will configure more specific ownership and ACLs in the next sprint:
+
+<br>
 
 <img width="482" height="125" alt="image" src="https://github.com/user-attachments/assets/9379cb03-c380-4bd4-988b-35ac13e3f3d1" />
 
@@ -1327,7 +1928,7 @@ ls -l /srv/samba/Data
 
 ### Step 2.2 — Configure Samba Network Shares
 
-**1. Open the Samba configuration file:**
+**Open the Samba configuration file:**
 
 ```bash
 sudo nano /etc/samba/smb.conf
@@ -1335,7 +1936,7 @@ sudo nano /etc/samba/smb.conf
 
 <br>
 
-**2. Add the share definitions at the bottom of the file:**
+Add the following share definitions at the bottom of the file. Each share section specifies the path, which groups can access it, and what level of access they have:
 
 ```ini
 [FinanceDocs]
@@ -1365,9 +1966,7 @@ sudo nano /etc/samba/smb.conf
     write list = @"Domain Admins"
 ```
 
-> - `valid users` restricts access to specific groups
-> - `create mask` and `directory mask` control the default permissions for new files and folders
-> - `write list` in the `[Public]` share allows only Domain Admins to write, while all domain users can read
+The `create mask` and `directory mask` settings define the maximum permissions new files and folders can have. For example, `0660` means files are readable and writable by owner and group, but not accessible to others. The `write list` override in `[Public]` allows Domain Admins to write even though the share is set to read-only for everyone else.
 
 <br>
 
@@ -1375,21 +1974,29 @@ sudo nano /etc/samba/smb.conf
 
 <br>
 
-**3. Validate the configuration for syntax errors:**
+**Validate the configuration syntax before restarting:**
 
 ```bash
 testparm
 ```
 
+<br>
+
+`testparm` parses the configuration file and reports any errors or warnings. A clean run with the message `Loaded services file OK` confirms the file is valid:
+
+<br>
+
 <img width="467" height="132" alt="image" src="https://github.com/user-attachments/assets/13e1c51c-e60d-4585-bc3d-dcd2fb24af43" />
 
 <br>
 
-**4. Restart the Samba service to apply the changes:**
+**Restart Samba to apply the changes:**
 
 ```bash
 sudo systemctl restart samba-ad-dc
 ```
+
+<br>
 
 <img width="481" height="22" alt="image" src="https://github.com/user-attachments/assets/9356308d-3935-4b3f-8143-f7e59e4e8d83" />
 
@@ -1397,21 +2004,33 @@ sudo systemctl restart samba-ad-dc
 
 ### Step 2.3 — Verify the Network Shares
 
-**List the available shares locally to confirm they appear:**
+**List all available shares on the server:**
 
 ```bash
 smbclient -L localhost -N
 ```
 
+<br>
+
+The output lists all shares, including the new `FinanceDocs`, `HRDocs`, and `Public` shares alongside the built-in `netlogon`, `sysvol`, and `IPC$` shares:
+
+<br>
+
 <img width="627" height="247" alt="image" src="https://github.com/user-attachments/assets/3e607ae5-571a-4f67-ac73-04cec65797ed" />
 
 <br>
 
-**Check directory ownership and permissions:**
+**Check directory ownership and permission bits:**
 
 ```bash
 ls -ld /srv/samba/Data/*
 ```
+
+<br>
+
+The listing shows the current owner, group, and permission string for each share directory. These will be refined further when ACLs are applied:
+
+<br>
 
 <img width="632" height="103" alt="image" src="https://github.com/user-attachments/assets/1d984dde-e425-4f85-9b01-3aad1b874891" />
 
@@ -1423,11 +2042,13 @@ ls -ld /srv/samba/Data/*
 
 ### Step 3.1 — Install ACL Support
 
-ACLs (Access Control Lists) allow fine-grained control over file permissions beyond the standard Linux user/group/other model. This is required for proper Samba AD permission enforcement.
+POSIX ACLs extend the standard Unix permission model (owner/group/others) to allow per-user and per-group permissions on individual files and directories. This is essential for Samba to correctly enforce the granular Windows-style permissions that AD administrators expect:
 
 ```bash
 sudo apt update && sudo apt install acl -y
 ```
+
+With ACL support installed, administrators can use `setfacl` to grant or revoke permissions for specific users or groups, and `getfacl` to read the current permission set on any file or directory. This goes far beyond what standard `chmod` can achieve.
 
 <br>
 
@@ -1435,25 +2056,33 @@ sudo apt update && sudo apt install acl -y
 
 ## 4. ⚙️ Task and Process Management
 
-> This section covers the essential Linux tools for monitoring system activity, managing services, and controlling processes — all critical skills for maintaining a healthy Samba AD DC.
+> Understanding how to monitor and control running processes is a core Linux administration skill. On a Domain Controller, it is especially important to know which Samba processes are running, how to identify resource-hungry processes, and how to gracefully manage service restarts and process signals.
 
 <br>
 
 ### 4.1 — The `top` Utility
 
-`top` provides a dynamic, real-time view of all running processes and resource consumption. It updates every few seconds and is the quickest way to spot runaway processes.
+`top` is the most widely used tool for real-time process monitoring. It updates automatically every few seconds and shows all running processes ranked by CPU usage by default.
 
-Key columns to watch:
-- **PID** — Unique process identifier
-- **%CPU** — Percentage of CPU being consumed
-- **%MEM** — Percentage of RAM being used
-- **Command** — Name of the program or script
+Key columns:
+- **PID** — The unique process identifier assigned by the kernel
+- **USER** — Which user owns this process
+- **%CPU** — Percentage of one CPU core being consumed
+- **%MEM** — Percentage of physical RAM in use
+- **TIME+** — Total CPU time consumed since the process started
+- **COMMAND** — The name of the executable
 
 ```bash
 top
 ```
 
+<br>
+
 <img width="185" height="20" alt="imagen" src="https://github.com/user-attachments/assets/14bed00a-c0bd-45e3-80cc-4b15ac4fb3b3" />
+
+<br>
+
+The `top` output shows a live view of all processes. Look for `samba`, `smbd`, and `winbindd` processes to confirm the AD services are running:
 
 <br>
 
@@ -1463,13 +2092,19 @@ top
 
 ### 4.2 — The `htop` Utility
 
-`htop` is an enhanced, more user-friendly alternative to `top`. It features color coding, mouse support, and the ability to scroll horizontally to see full command lines.
+`htop` is a modern, color-coded replacement for `top`. It provides a much more intuitive interface with mouse support, horizontal scrolling to see full command names, and built-in process kill/signal functionality. It is the preferred tool for interactive system monitoring.
 
 ```bash
 htop
 ```
 
+<br>
+
 <img width="634" height="134" alt="imagen" src="https://github.com/user-attachments/assets/0b79537a-2c61-432f-8539-d9dd3d074ab0" />
+
+<br>
+
+The `htop` interface showing CPU meters, memory usage, and the process list with color coding:
 
 <br>
 
@@ -1477,29 +2112,38 @@ htop
 
 <br>
 
-**Key interactions in htop:**
+**Key interactive commands in htop:**
 
 | Key | Action |
 |-----|--------|
-| `F2` | Open Setup to customize columns and colors |
-| `F6` | Sort processes by CPU, Memory, or Priority |
-| `F9` | Kill a selected process by sending a signal |
+| `F2` | Open Setup to customize columns, colors, and meters |
+| `F3` | Search for a process by name |
+| `F5` | Toggle between tree view and flat list |
+| `F6` | Sort processes by any column |
+| `F9` | Send a signal to the selected process (kill/stop/resume) |
+| `F10` | Quit htop |
 
 <br>
 
 ### 4.3 — The `ps` Command
 
-`ps` (Process Status) is a non-interactive snapshot of currently running processes. It's useful in scripts and for piping output to `grep`.
+While `top` and `htop` provide live interactive views, `ps` (Process Status) takes a one-time snapshot of the process table. This makes it ideal for use in shell scripts, log files, and piping to `grep`. The most common invocation is `ps aux`:
+
+- **`a`** — Show processes from all users, not just the current user
+- **`u`** — Display in user-friendly format, showing username, CPU, and memory
+- **`x`** — Include processes not attached to a terminal (background daemons)
 
 ```bash
-# Show all running processes in user-friendly format
+# View all running processes
 ps aux
 
 # Filter specifically for Samba-related processes
 ps aux | grep samba
 ```
 
-> `ps aux | grep samba` is particularly useful to verify all Samba daemons (smbd, nmbd, samba, winbindd) are running.
+<br>
+
+The filtered output shows all Samba processes including their PIDs, which can be used to send signals directly:
 
 <br>
 
@@ -1509,37 +2153,67 @@ ps aux | grep samba
 
 ### 4.4 — Service Management with systemctl
 
+`systemctl` is the central tool for managing services in modern Linux (systemd-based) systems. It handles starting, stopping, restarting, enabling, and querying the status of services.
+
+**Check the detailed status of the Samba AD DC service:**
+
 ```bash
-# Check if the service is active and review recent logs
 sudo systemctl status samba-ad-dc
 ```
+
+<br>
+
+The status output includes: service state (active/inactive), PID, uptime, recent journal entries, and sub-process details:
+
+<br>
 
 <img width="802" height="399" alt="imagen" src="https://github.com/user-attachments/assets/adb7f9ee-c7d6-47f2-9dff-fb81baa2f535" />
 
 <br>
 
+**Restart a service that is hung or needs a configuration reload:**
+
 ```bash
-# Restart a service that is unresponsive or stuck
 sudo systemctl restart samba-ad-dc
 ```
+
+<br>
+
+A clean restart with no errors — the command returns silently:
+
+<br>
 
 <img width="426" height="20" alt="imagen" src="https://github.com/user-attachments/assets/d2921b5e-1fba-40a5-b692-1cf94f4d64a5" />
 
 <br>
 
+**Enable the service so it starts automatically on every boot:**
+
 ```bash
-# Ensure the service starts automatically after every reboot
 sudo systemctl enable samba-ad-dc
 ```
+
+<br>
+
+The enable command creates symbolic links in the systemd unit directories, ensuring the service starts automatically:
+
+<br>
 
 <img width="800" height="69" alt="imagen" src="https://github.com/user-attachments/assets/fbbb5ded-cde1-4a74-8aad-7525276ac856" />
 
 <br>
 
+**List all currently active services to see the full picture of what is running:**
+
 ```bash
-# List all currently active services on the system
 systemctl list-units --type=service --state=running
 ```
+
+<br>
+
+The output shows every active service on the system. This is useful for identifying unexpected services that may be consuming resources or causing conflicts:
+
+<br>
 
 <img width="798" height="469" alt="imagen" src="https://github.com/user-attachments/assets/7302992d-1513-424d-8528-9a03744609bb" />
 
@@ -1547,46 +2221,64 @@ systemctl list-units --type=service --state=running
 
 ### 4.5 — Sending Signals to Processes
 
-Linux uses signals to communicate with processes. Here are the most common ones:
+Linux uses **signals** as the primary mechanism for inter-process communication. When a process becomes unresponsive, we send it a signal to tell it what to do. The most important signals for system administration are:
 
 ```bash
-# Gracefully terminate a process (SIGTERM — allows cleanup)
+# SIGTERM (signal 15) — Graceful shutdown, allows the process to save state and clean up
 kill <PID>
 
-# Forcefully kill a process immediately (SIGKILL — no cleanup)
+# SIGKILL (signal 9) — Immediate, unconditional termination. No cleanup possible.
 kill -9 <PID>
 
-# Kill all processes with a specific name
+# SIGSTOP (signal 19) — Pause a process without terminating it
+kill -19 <PID>
+
+# SIGCONT (signal 18) — Resume a previously stopped process
+kill -18 <PID>
+
+# Kill all instances of a process by name
 sudo killall smbd
 ```
 
+> Always try `SIGTERM` first. `SIGKILL` is a last resort — it cannot be caught or ignored by the process, so the process has no chance to release resources or flush data to disk.
+
 <br>
 
-### 4.6 — Practical Exercise: Controlling a Process
+### 4.6 — Practical Exercise: Pausing and Resuming a Process
 
-**Run the `sl` command (Steam Locomotive — a fun terminal animation):**
+This exercise demonstrates process control signals using the `sl` program (a playful terminal animation of a steam locomotive). It is a harmless way to practice the `kill` command in a lab setting.
+
+**Step 1: Run the animation:**
+
+<br>
 
 <img width="797" height="433" alt="imagen" src="https://github.com/user-attachments/assets/81ee956f-97c3-4203-880c-674755a4aa2b" />
 
 <br>
 
-**Find the PID of the running process:**
+**Step 2: Find its PID using `pgrep`:**
 
 ```bash
 pgrep -sl
 ```
 
+<br>
+
+`pgrep` searches the process table by name and returns the matching PID:
+
+<br>
+
 <img width="268" height="126" alt="imagen" src="https://github.com/user-attachments/assets/acc2b3c5-6bd7-4472-8a9d-ede1c98a371a" />
 
 <br>
 
-**Stop (pause) the process using SIGSTOP:**
+**Step 3: Send SIGSTOP to freeze the animation:**
 
 ```bash
 kill -19 <PID>
 ```
 
-> Signal 19 is `SIGSTOP` — it pauses the process without terminating it. The animation will freeze.
+Signal 19 is `SIGSTOP`. The locomotive animation freezes mid-screen, but the process is still alive in memory:
 
 <br>
 
@@ -1594,17 +2286,21 @@ kill -19 <PID>
 
 <br>
 
+The terminal shows the frozen animation state — the process is paused but has not been terminated:
+
+<br>
+
 <img width="657" height="291" alt="imagen" src="https://github.com/user-attachments/assets/1fb29639-cc40-4409-aaa2-a540d5a5485c" />
 
 <br>
 
-**Resume the process using SIGCONT:**
+**Step 4: Send SIGCONT to resume the process:**
 
 ```bash
 kill -18 <PID>
 ```
 
-> Signal 18 is `SIGCONT` — it resumes a paused process from where it left off.
+Signal 18 is `SIGCONT` (continue). The animation immediately resumes from exactly where it stopped:
 
 <br>
 
@@ -1618,7 +2314,7 @@ kill -18 <PID>
 
 # 🤝 SPRINT 4 — Domain Trust
 
-> **Goal:** Establish a **forest trust** between two separate Samba Active Directory domains (`lab12.lan` and `lab120.lan`). This allows users from one domain to authenticate and access resources in the other, enabling cross-domain collaboration while keeping each domain administratively independent.
+> **Goal:** Establish a **bidirectional forest trust** between two completely independent Samba Active Directory domains — `lab12.lan` (our original DC from Sprint 1) and a new domain `lab120.lan` (a second DC set up specifically for this sprint). A forest trust allows users from either domain to authenticate and access resources in the other domain, enabling cross-organizational collaboration without merging the two domains into one.
 
 <br>
 
@@ -1626,7 +2322,11 @@ kill -18 <PID>
 
 ## Step 1 — Install and Configure the Second Domain Controller (LS120)
 
-A second Ubuntu Server is provisioned as a completely separate AD DC for the `lab120.lan` domain. This machine goes through the same initial setup process as Sprint 1.
+We provision a brand-new Ubuntu Server as a separate, independent AD DC for the `lab120.lan` domain. This server goes through the same installation and configuration steps as Sprint 1, but with different domain and realm names. The two DCs must be able to reach each other over the network.
+
+<br>
+
+The new virtual machine is created in the hypervisor:
 
 <br>
 
@@ -1634,11 +2334,23 @@ A second Ubuntu Server is provisioned as a completely separate AD DC for the `la
 
 <br>
 
+The operating system installation begins on the new VM:
+
+<br>
+
 <img width="801" height="512" alt="image" src="https://github.com/user-attachments/assets/52e791f3-6942-4936-b1fb-8b16f111e492" />
 
 <br>
 
+The installation completes and the system boots to a command prompt:
+
+<br>
+
 <img width="798" height="320" alt="image" src="https://github.com/user-attachments/assets/440d3c14-49c0-4242-8bf5-fe312c9f06e1" />
+
+<br>
+
+Basic network connectivity is verified after the OS installation — the new server can reach the internet:
 
 <br>
 
@@ -1650,11 +2362,19 @@ A second Ubuntu Server is provisioned as a completely separate AD DC for the `la
 
 ## Step 2 — Network Configuration for LS120
 
-**Edit the Netplan configuration file:**
+The second DC needs a static IP on its internal interface and must be able to reach `ls12.lab12.lan` over the network. We follow the same Netplan process as in Sprint 1.
+
+**Edit the Netplan configuration:**
 
 ```bash
 nano /etc/netplan/00-installer-config.yaml
 ```
+
+<br>
+
+The configuration assigns a static IP (`192.168.30.42`) to the internal interface. This IP is in the same subnet as the first DC so they can communicate:
+
+<br>
 
 <img width="616" height="168" alt="imagen" src="https://github.com/user-attachments/assets/f3debf6c-2daf-4552-848e-e246bb7df90d" />
 
@@ -1666,7 +2386,17 @@ nano /etc/netplan/00-installer-config.yaml
 sudo netplan apply
 ```
 
+<br>
+
+The network is reconfigured with the new static IP:
+
+<br>
+
 <img width="799" height="231" alt="imagen" src="https://github.com/user-attachments/assets/d2d54bb5-0b57-452e-ae68-22265328c44d" />
+
+<br>
+
+We verify the IP assignment was applied correctly by checking the interface details:
 
 <br>
 
@@ -1674,17 +2404,27 @@ sudo netplan apply
 
 <br>
 
-**Remove the symbolic link to /etc/resolv.conf and reconfigure it:**
+**Remove the systemd-managed symlink and create a static resolv.conf:**
 
 ```bash
 sudo unlink /etc/resolv.conf
 ```
 
+<br>
+
 <img width="415" height="18" alt="imagen" src="https://github.com/user-attachments/assets/6e52f4d5-7961-4d9a-847f-49aca9786fe1" />
 
 <br>
 
+The static resolv.conf is created with the new server's own IP as the nameserver (since it will be its own DNS server after provisioning):
+
+<br>
+
 <img width="796" height="598" alt="imagen" src="https://github.com/user-attachments/assets/c0077bf7-e2dc-4c54-9d8f-e212ce34dd27" />
+
+<br>
+
+The immutable flag is applied to prevent the file from being overwritten:
 
 <br>
 
@@ -1696,6 +2436,8 @@ sudo unlink /etc/resolv.conf
 
 ## Step 3 — Install Samba on LS120
 
+We run the same package installation command as in Sprint 1. The Kerberos configuration prompts will now ask for `LAB120.LAN` as the realm:
+
 ```bash
 sudo apt install -y acl attr samba samba-dsdb-modules samba-vfs-modules \
   smbclient winbind libpam-winbind libnss-winbind libpam-krb5 \
@@ -1704,15 +2446,23 @@ sudo apt install -y acl attr samba samba-dsdb-modules samba-vfs-modules \
 
 <br>
 
-Kerberos realm configuration for `LAB120.LAN`:
+The Kerberos realm prompt — enter `LAB120.LAN` in uppercase to match the new domain:
+
+<br>
 
 <img width="907" height="285" alt="image" src="https://github.com/user-attachments/assets/36ce743a-b587-41fc-acf4-e92bc4e56a56" />
 
 <br>
 
-`ls120.lab120.lan` hostname configuration:
+The KDC hostname prompt — enter `ls120.lab120.lan`, the FQDN of the second DC:
+
+<br>
 
 <img width="907" height="218" alt="image" src="https://github.com/user-attachments/assets/91e70db1-92a4-4ed2-9f7c-d3cd18b7b24f" />
+
+<br>
+
+The administrative server prompt — enter the same FQDN:
 
 <br>
 
@@ -1724,24 +2474,39 @@ Kerberos realm configuration for `LAB120.LAN`:
 
 ## Step 4 — Disable Unneeded Services and Enable the AD DC
 
-**Stop and disable the member-server daemons** (they are not needed on a Domain Controller):
+On a Domain Controller, only `samba-ad-dc` should run. The member-server daemons (`smbd`, `nmbd`, `winbind`) must be stopped and disabled to prevent port conflicts:
 
 ```bash
 sudo systemctl disable --now smbd nmbd winbind
 ```
 
+<br>
+
+All three services are stopped and disabled. The output confirms the symlinks were removed from the systemd startup directories:
+
+<br>
+
 <img width="923" height="138" alt="image" src="https://github.com/user-attachments/assets/2d76573f-b3ca-4d3d-804a-e1c93f3f336e" />
 
 <br>
 
-**Enable only samba-ad-dc, which handles all AD and DC functionality:**
+**Unmask and enable `samba-ad-dc`:**
+
+The service is masked by default (to prevent accidental start before provisioning). We unmask it and then enable it for automatic start on boot:
 
 ```bash
 sudo systemctl unmask samba-ad-dc
-sudo systemctl enable samba-ad-dc
 ```
 
+<br>
+
 <img width="516" height="45" alt="image" src="https://github.com/user-attachments/assets/e8d4dfe9-3051-4d91-b1b5-12adfb666e77" />
+
+<br>
+
+```bash
+sudo systemctl enable samba-ad-dc
+```
 
 <br>
 
@@ -1753,44 +2518,59 @@ sudo systemctl enable samba-ad-dc
 
 ## Step 5 — Provision Samba AD on LS120
 
-**Back up the default smb.conf:**
+**Back up the default smb.conf** (the provisioning tool requires this file to not exist or be empty):
 
 ```bash
 sudo mv /etc/samba/smb.conf /etc/samba/smb.conf.orig
 ```
 
+<br>
+
 <img width="678" height="21" alt="image" src="https://github.com/user-attachments/assets/490745f2-8e2f-4c00-8ff3-ba3fb8676700" />
 
 <br>
 
-**Run the Samba domain provisioning wizard:**
+**Run the interactive provisioning wizard:**
 
 ```bash
 sudo samba-tool domain provision
 ```
 
-Enter the following values when prompted:
+Enter the following values when prompted. These define the new, separate domain:
 
 ```
 Realm:       LAB120.LAN
 Domain:      LAB120
 Server Role: dc
 DNS backend: SAMBA_INTERNAL
-DNS forwarder IP address: (leave blank or enter an external DNS)
+DNS forwarder IP address: (leave blank or set to 1.1.1.1 for internet)
 ```
+
+<br>
+
+The provisioning tool creates the AD database, generates the Kerberos keytab, sets up the internal DNS zones, and writes the final `smb.conf` configuration file:
+
+<br>
 
 <img width="941" height="257" alt="image" src="https://github.com/user-attachments/assets/ab455bb6-4c07-404a-be91-d7d74d35a1f3" />
 
 <br>
 
-**Replace the default Kerberos config with Samba's generated one:**
+**Replace the system Kerberos configuration with Samba's generated one.** Samba creates a tailored `krb5.conf` during provisioning that is pre-configured with the correct realm settings:
 
 ```bash
 sudo mv /etc/krb5.conf /etc/krb5.conf.orig
-sudo cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
 ```
 
+<br>
+
 <img width="597" height="20" alt="image" src="https://github.com/user-attachments/assets/7b9042f4-a44a-4e0b-94d9-67e4d5a1774e" />
+
+<br>
+
+```bash
+sudo cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
+```
 
 <br>
 
@@ -1798,14 +2578,27 @@ sudo cp /var/lib/samba/private/krb5.conf /etc/krb5.conf
 
 <br>
 
-**Start and verify the service:**
+**Start the Samba AD DC service:**
 
 ```bash
 sudo systemctl start samba-ad-dc
+```
+
+<br>
+
+<img width="488" height="28" alt="image" src="https://github.com/user-attachments/assets/a70b9a6f-3402-4af8-9ec3-8d38c84b5c31" />
+
+<br>
+
+**Verify the service is running and healthy:**
+
+```bash
 sudo systemctl status samba-ad-dc
 ```
 
-<img width="488" height="28" alt="image" src="https://github.com/user-attachments/assets/a70b9a6f-3402-4af8-9ec3-8d38c84b5c31" />
+<br>
+
+The status output shows `active (running)` for the `lab120.lan` domain controller:
 
 <br>
 
@@ -1817,14 +2610,23 @@ sudo systemctl status samba-ad-dc
 
 ## Step 6 — Time Synchronization for LS120
 
-**Configure Chrony NTP permissions for Samba:**
+The second DC also needs Chrony configured correctly. Kerberos will reject any authentication requests between the two domains if their clocks differ by more than 5 minutes.
+
+**Set permissions on the NTP signing socket:**
 
 ```bash
 sudo chown root:_chrony /var/lib/samba/ntp_signd/
-sudo chmod 750 /var/lib/samba/ntp_signd/
 ```
 
+<br>
+
 <img width="657" height="30" alt="image" src="https://github.com/user-attachments/assets/6f13422d-1863-4b56-a9d8-8229e61592f5" />
+
+<br>
+
+```bash
+sudo chmod 750 /var/lib/samba/ntp_signd/
+```
 
 <br>
 
@@ -1832,17 +2634,19 @@ sudo chmod 750 /var/lib/samba/ntp_signd/
 
 <br>
 
-**Edit the Chrony configuration file:**
+**Edit the Chrony configuration:**
 
 ```bash
 sudo nano /etc/chrony/chrony.conf
 ```
 
+<br>
+
 <img width="513" height="22" alt="image" src="https://github.com/user-attachments/assets/40ab6841-c6cd-4f9a-a5f4-91ef064a2a63" />
 
 <br>
 
-Add the following lines to allow NTP clients on the local subnet and point to the Samba NTP socket:
+Add the NTP server configuration lines. Note that `bindcmdaddress` uses `192.168.30.42` — the IP of the second DC:
 
 ```
 bindcmdaddress 192.168.30.42
@@ -1850,18 +2654,35 @@ allow 192.168.30.0/24
 ntpsigndsocket /var/lib/samba/ntp_signd
 ```
 
+<br>
+
+The full Chrony configuration file for LS120 after our additions:
+
+<br>
+
 <img width="941" height="933" alt="image" src="https://github.com/user-attachments/assets/e996678b-853e-47f6-9871-6bcdd8d6384f" />
 
 <br>
 
-**Restart and verify:**
+**Restart Chrony and confirm it is running:**
 
 ```bash
 sudo systemctl restart chronyd
+```
+
+<br>
+
+<img width="472" height="23" alt="image" src="https://github.com/user-attachments/assets/fa7f0092-fb8a-428a-9453-ff4a6a8ce5e2" />
+
+<br>
+
+```bash
 sudo systemctl status chronyd
 ```
 
-<img width="472" height="23" alt="image" src="https://github.com/user-attachments/assets/fa7f0092-fb8a-428a-9453-ff4a6a8ce5e2" />
+<br>
+
+Chrony is active, synchronized to upstream NTP sources, and listening for requests from domain clients:
 
 <br>
 
@@ -1873,14 +2694,31 @@ sudo systemctl status chronyd
 
 ## Step 7 — Verify Samba AD on LS120
 
-Run the same verification checks performed in Sprint 1, but for the new `lab120.lan` domain.
+We run the same full set of verification checks on the new DC to confirm everything is working before attempting to create the trust relationship.
+
+**Verify DNS A records for the new domain:**
 
 ```bash
 host -t A lab120.lan
+```
+
+<br>
+
+The domain name resolves to the second DC's IP:
+
+<br>
+
+<img width="393" height="71" alt="image" src="https://github.com/user-attachments/assets/0dfaf3ae-23aa-4d4c-9c98-1d069682c802" />
+
+<br>
+
+```bash
 host -t A ls120.lab120.lan
 ```
 
-<img width="393" height="71" alt="image" src="https://github.com/user-attachments/assets/0dfaf3ae-23aa-4d4c-9c98-1d069682c802" />
+<br>
+
+The second DC's FQDN resolves correctly:
 
 <br>
 
@@ -1888,12 +2726,29 @@ host -t A ls120.lab120.lan
 
 <br>
 
+**Verify Kerberos and LDAP SRV records:**
+
 ```bash
 host -t SRV _kerberos._udp.lab120.lan
+```
+
+<br>
+
+The Kerberos service record points to the second DC on port 88:
+
+<br>
+
+<img width="613" height="42" alt="image" src="https://github.com/user-attachments/assets/78cb578b-0773-4205-b170-34928b50ba79" />
+
+<br>
+
+```bash
 host -t SRV _ldap._tcp.lab120.lan
 ```
 
-<img width="613" height="42" alt="image" src="https://github.com/user-attachments/assets/78cb578b-0773-4205-b170-34928b50ba79" />
+<br>
+
+The LDAP service record points to the second DC on port 389:
 
 <br>
 
@@ -1901,20 +2756,41 @@ host -t SRV _ldap._tcp.lab120.lan
 
 <br>
 
+**Verify SMB shares are available:**
+
 ```bash
 smbclient -L clockwork.local -N
 ```
+
+<br>
+
+The default shares (`netlogon`, `sysvol`, `IPC$`) are present, confirming AD DC mode is active:
+
+<br>
 
 <img width="617" height="191" alt="image" src="https://github.com/user-attachments/assets/5cc241c6-10da-4984-a95a-362c73358c51" />
 
 <br>
 
+**Test Kerberos authentication on the new domain:**
+
 ```bash
 kinit administrator@CLOCKWORK.LOCAL
+```
+
+<br>
+
+<img width="617" height="191" alt="image" src="https://github.com/user-attachments/assets/3219284b-18bc-41f7-9c07-b8f588f77723" />
+
+<br>
+
+```bash
 klist
 ```
 
-<img width="617" height="191" alt="image" src="https://github.com/user-attachments/assets/3219284b-18bc-41f7-9c07-b8f588f77723" />
+<br>
+
+The TGT for the `lab120.lan` administrator is displayed with valid timestamps:
 
 <br>
 
@@ -1922,25 +2798,55 @@ klist
 
 <br>
 
+**Test SMB login:**
+
 ```bash
 sudo smbclient //localhost/netlogon -U 'administrator'
 ```
+
+<br>
 
 <img width="737" height="71" alt="image" src="https://github.com/user-attachments/assets/7ab6af6d-e4e2-4970-8942-4531356fc927" />
 
 <br>
 
+**Set the administrator password for the new domain:**
+
 ```bash
 sudo samba-tool user setpassword administrator
-testparm
-sudo samba-tool domain level show
 ```
+
+<br>
 
 <img width="640" height="85" alt="image" src="https://github.com/user-attachments/assets/1f37899d-e578-47e9-881c-0a5a9c577d2b" />
 
 <br>
 
+**Validate the Samba configuration:**
+
+```bash
+testparm
+```
+
+<br>
+
+The configuration passes validation with no errors:
+
+<br>
+
 <img width="507" height="787" alt="image" src="https://github.com/user-attachments/assets/f9cf7707-31fb-4bf7-8c74-6ea10b76ca7d" />
+
+<br>
+
+**Check the domain functional level of the new domain:**
+
+```bash
+sudo samba-tool domain level show
+```
+
+<br>
+
+Both forest and domain functional levels report `Windows 2008 R2` or higher, confirming the new DC is fully provisioned:
 
 <br>
 
@@ -1950,13 +2856,11 @@ sudo samba-tool domain level show
 
 ---
 
-## Step 8 — Establish the Domain Trust
+## Step 8 — Establish the Bidirectional Forest Trust
 
-With both DCs operational, we can now create the bidirectional forest trust. This trust allows users from `lab120.lan` to access resources in `lab12.lan` and vice versa.
+With both DCs verified and operational, we create the trust. A **forest trust** is the highest level of trust between two AD domains — it grants users in either domain the ability to be authenticated by the other domain's DC and access resources across the boundary.
 
-<br>
-
-**Run the trust creation command from the LS12 domain controller:**
+**Run this command from the LS12 Domain Controller (the `lab12.lan` side):**
 
 ```bash
 sudo samba-tool domain trust create lab120.lan \
@@ -1965,9 +2869,16 @@ sudo samba-tool domain trust create lab120.lan \
   -U administrator@lab120.lan
 ```
 
-> - `--type=forest` — Creates a forest-level trust (the highest level, for full cross-domain access)
-> - `--direction=both` — Makes the trust bidirectional (both domains trust each other)
-> - `-U administrator@lab120.lan` — Authenticates as the remote domain's administrator
+You will be prompted for the `lab120.lan` administrator password. The command then connects to the second DC, negotiates the trust relationship, and registers the trust objects in both AD databases.
+
+Flags explained:
+- **`--type=forest`** — Creates a forest-level trust (highest level, allows full transitivity)
+- **`--direction=both`** — Bidirectional trust: `lab12.lan` trusts `lab120.lan` AND vice versa
+- **`-U administrator@lab120.lan`** — Authenticates as the remote domain's admin to authorize the trust from both sides
+
+<br>
+
+The trust creation output shows the trust being established step by step across both domains:
 
 <br>
 
@@ -1975,33 +2886,47 @@ sudo samba-tool domain trust create lab120.lan \
 
 <br>
 
-**List all configured trusts:**
+**List all configured trusts to confirm the new trust was recorded:**
 
 ```bash
 sudo samba-tool domain trust list
 ```
 
+<br>
+
+The `lab120.lan` domain appears in the trust list with direction `Both` and type `Forest`:
+
+<br>
+
 <img width="606" height="48" alt="image" src="https://github.com/user-attachments/assets/1bda3171-d848-4119-9ab9-48b153324984" />
 
 <br>
 
-**Display detailed trust information:**
+**Inspect the detailed trust attributes:**
 
 ```bash
 sudo samba-tool domain trust show lab120.lan
 ```
 
+<br>
+
+The detailed output shows the trust type, direction, flags, and the partner domain's SID. This is the full picture of the trust object stored in the AD database:
+
+<br>
+
 <img width="935" height="323" alt="image" src="https://github.com/user-attachments/assets/8843d7d7-185d-42f3-b6db-477c3c94f0b3" />
 
 <br>
 
-**Validate the trust is working correctly:**
+**Validate the trust is functionally operational:**
 
 ```bash
 sudo samba-tool domain trust validate lab06.lan
 ```
 
-> A successful validation confirms the trust is active and both DCs can communicate with each other.
+<br>
+
+A successful validation performs a full end-to-end check — it authenticates across the trust boundary and confirms the trust is not just configured, but actively working:
 
 <br>
 
@@ -2011,16 +2936,31 @@ sudo samba-tool domain trust validate lab06.lan
 
 ---
 
-## Step 9 — Create Test Users for LAB120
+## Step 9 — Create Test Users on LAB120
 
-To test cross-domain authentication, create two test user accounts on the `lab120.lan` domain.
+To fully test cross-domain authentication, we create two standard test user accounts on the `lab120.lan` domain. These accounts will be used to verify that a user from one domain can authenticate on a machine joined to the other domain:
 
 ```bash
 sudo samba-tool user create testuser admin_21 --given-name=Test --surname=User
+```
+
+<br>
+
+The first test user `testuser` is created successfully in the `lab120.lan` domain:
+
+<br>
+
+<img width="901" height="27" alt="image" src="https://github.com/user-attachments/assets/9cded784-0c95-415f-b00e-1e1954ae4d52" />
+
+<br>
+
+```bash
 sudo samba-tool user create testuser2 admin_21 --given-name=Test --surname=User
 ```
 
-<img width="901" height="27" alt="image" src="https://github.com/user-attachments/assets/9cded784-0c95-415f-b00e-1e1954ae4d52" />
+<br>
+
+The second test user `testuser2` is also created:
 
 <br>
 
@@ -2028,11 +2968,17 @@ sudo samba-tool user create testuser2 admin_21 --given-name=Test --surname=User
 
 <br>
 
-**Verify the users were created:**
+**Verify both users appear in the domain's user list:**
 
 ```bash
 sudo samba-tool user list
 ```
+
+<br>
+
+The output shows all users in the `lab120.lan` domain, including the two newly created test accounts alongside the default `Administrator` account:
+
+<br>
 
 <img width="427" height="123" alt="image" src="https://github.com/user-attachments/assets/dc929015-e441-4b7e-98d0-21296d75ced8" />
 
@@ -2042,9 +2988,7 @@ sudo samba-tool user list
 
 ## Step 10 — Cross-Domain Authentication Verification
 
-The final step confirms that a user from `lab120.lan` can authenticate from a machine joined to `lab12.lan`. This is the ultimate proof that the forest trust is working end-to-end.
-
-<br>
+This final step is the definitive proof that the forest trust is working end-to-end. We log in on a machine that is joined to `lab12.lan` and attempt to authenticate using credentials from the `lab120.lan` domain — something that would have been impossible before the trust was established.
 
 **On the LS12 Domain Controller, request a Kerberos ticket for a LAB120 user:**
 
@@ -2052,7 +2996,11 @@ The final step confirms that a user from `lab120.lan` can authenticate from a ma
 kinit testuser@LAB120.LAN
 ```
 
-> If the trust is working, Kerberos will successfully grant a TGT for the foreign domain user.
+When you press Enter, Kerberos contacts the `lab12.lan` KDC, which recognizes `LAB120.LAN` as a trusted domain and redirects the authentication request to the `lab120.lan` KDC. The remote KDC validates the credentials and issues a ticket that is honored by `lab12.lan`.
+
+<br>
+
+The command prompts for the password and, on success, returns silently — the ticket is now cached:
 
 <br>
 
@@ -2060,13 +3008,15 @@ kinit testuser@LAB120.LAN
 
 <br>
 
-**Verify the Kerberos ticket was issued:**
+**Display the cached Kerberos tickets to confirm the cross-domain ticket was issued:**
 
 ```bash
 klist
 ```
 
-> The output should show a ticket for `testuser@LAB120.LAN` — proof that cross-domain Kerberos authentication is functioning.
+<br>
+
+The ticket cache shows a TGT for `testuser@LAB120.LAN` — this is a foreign-realm ticket stored on a machine in `lab12.lan`. This is definitive proof that cross-domain Kerberos authentication is working through the forest trust:
 
 <br>
 
@@ -2074,13 +3024,21 @@ klist
 
 <br>
 
-**Clean up — destroy all cached Kerberos tickets:**
+**Clean up — destroy all cached tickets:**
 
 ```bash
 kdestroy
 ```
 
+`kdestroy` removes all Kerberos tickets from the credential cache. This is good security practice after testing — you do not want sensitive tickets left in memory when testing is complete.
+
+<br>
+
 <img width="223" height="31" alt="image" src="https://github.com/user-attachments/assets/97fecc7c-f200-47d0-a8b3-1c815c27da76" />
+
+<br>
+
+The forest trust is fully operational. Users from `lab120.lan` can now authenticate on machines joined to `lab12.lan`, and vice versa — completing the final sprint of this project.
 
 <br>
 
@@ -2088,4 +3046,4 @@ kdestroy
 
 <br>
 
-
+*📄 Linux-Sprint — Technical Documentation for Samba Active Directory on Ubuntu Server*
