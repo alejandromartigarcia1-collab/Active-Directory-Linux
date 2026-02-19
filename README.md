@@ -1496,4 +1496,4 @@ kdestroy
 
 ---
 
-*Documentación generada para el proyecto Linux-Sprint* 🐧
+
