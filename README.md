@@ -2088,4 +2088,4 @@ kdestroy
 
 <br>
 
-*📄 Linux-Sprint Technical Documentation — Samba Active Directory on Ubuntu Server*
+
