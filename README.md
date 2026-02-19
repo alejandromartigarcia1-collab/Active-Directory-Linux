@@ -20,8 +20,7 @@
 We change the hostname with this command:
 
 ```bash
-sudo hostnamectl set-hostname ls12
-```
+sudo hostnamectl set-hostna
 
 <img width="474" height="71" alt="imagen" src="https://github.com/user-attachments/assets/6932197e-3e60-4bac-ad15-ba54634bc41a" />
 
