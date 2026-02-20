@@ -6,7 +6,7 @@ This document serves as a step-by-step reference guide, including commands, conf
 
 <br>
 
----
+--- 
 
 ## 📋 Table of Contents
 
