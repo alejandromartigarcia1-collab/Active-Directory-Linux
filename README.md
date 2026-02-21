@@ -224,7 +224,8 @@ The screenshot below shows the completed file with the correct DNS entries:
 
 <br>
 
-<img width="958" height="127" alt="image" src="https://github.com/user-attachments/assets/adb21468-0cec-4d10-a97a-c71e303b4c4f" />
+<img width="936" height="70" alt="image" src="https://github.com/user-attachments/assets/82e8aef7-1c60-4078-b748-0c8523dafaa8" />
+
 
 <br>
 
