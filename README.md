@@ -2394,7 +2394,6 @@ network:
       addresses: [192.168.30.42/24]
       dhcp4: false
   version: 2
-
 ```
 
 
