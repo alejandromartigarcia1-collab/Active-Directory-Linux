@@ -2376,7 +2376,7 @@ nano /etc/netplan/00-installer-config.yaml
 The configuration assigns a static IP (`192.168.30.42`) to the internal interface. This IP is in the same subnet as the first DC so they can communicate:
 
 <br>
-
+```
 network:
   ethernets:
     enp0s3:
@@ -2394,8 +2394,8 @@ network:
       addresses: [192.168.30.42/24]
       dhcp4: false
   version: 2
-ip
 
+```
 
 
 
