@@ -214,7 +214,7 @@ sudo nano /etc/resolv.conf
 Inside the file, add the domain's nameserver (which is this server itself on the internal interface) and the search domain so that short hostnames resolve automatically:
 
 ```
-nameserver 192.168.30.40
+nameserver 1.1.1.1
 search lab12.lan
 ```
 
@@ -224,7 +224,7 @@ The screenshot below shows the completed file with the correct DNS entries:
 
 <br>
 
-<img width="802" height="110" alt="imagen" src="https://github.com/user-attachments/assets/736ebab6-1fa6-430b-85e5-c3229df50664" />
+<img width="958" height="127" alt="image" src="https://github.com/user-attachments/assets/adb21468-0cec-4d10-a97a-c71e303b4c4f" />
 
 <br>
 
