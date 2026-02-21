@@ -2377,6 +2377,30 @@ The configuration assigns a static IP (`192.168.30.42`) to the internal interfac
 
 <br>
 
+network:
+  ethernets:
+    enp0s3:
+      addresses:
+        - 192.168.1.80/24
+      nameservers:
+        addresses:
+          - 8.8.8.8        # Added Google DNS for public resolution
+          - 1.1.1.1        # Added Cloudflare DNS as backup
+        search: []
+      routes:
+        - to: default
+          via: 192.168.1.1
+    enp0s8:
+      addresses: [192.168.30.42/24]
+      dhcp4: false
+  version: 2
+ip
+
+
+
+
+
+
 <img width="616" height="168" alt="imagen" src="https://github.com/user-attachments/assets/f3debf6c-2daf-4552-848e-e246bb7df90d" />
 
 <br>
