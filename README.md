@@ -2376,25 +2376,28 @@ nano /etc/netplan/00-installer-config.yaml
 The configuration assigns a static IP (`192.168.30.42`) to the internal interface. This IP is in the same subnet as the first DC so they can communicate:
 
 <br>
-``` bash
+
+cat <<EOF | sudo tee /etc/netplan/00-installer-config.yaml
 network:
+  version: 2
   ethernets:
     enp0s3:
       addresses:
         - 192.168.1.80/24
       nameservers:
         addresses:
-          - 8.8.8.8        # Added Google DNS for public resolution
-          - 1.1.1.1        # Added Cloudflare DNS as backup
-        search: []
+          - 8.8.8.8
+          - 1.1.1.1
+        search: [lab012.lan]
       routes:
         - to: default
           via: 192.168.1.1
     enp0s8:
       addresses: [192.168.30.42/24]
       dhcp4: false
-  version: 2
-```
+EOF
+
+sudo netplan apply
 
 
 
