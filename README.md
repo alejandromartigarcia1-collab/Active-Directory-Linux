@@ -2210,7 +2210,7 @@ They can access the Public folder
 
 ---
 
-## 4. ⚙️ Task and Process Management
+## 4. ⚙️ Process Management
 
 > Understanding how to monitor and control running processes is a core Linux administration skill. On a Domain Controller, it is especially important to know which Samba processes are running, how to identify resource-hungry processes, and how to gracefully manage service restarts and process signals.
 
@@ -2463,6 +2463,85 @@ Signal 18 is `SIGCONT` (continue). The animation immediately resumes from exactl
 <img width="1563" height="473" alt="imagen" src="https://github.com/user-attachments/assets/80e19292-b10e-41c4-8ebf-1dba21e7f671" />
 
 <br>
+
+
+## 5 Task Management
+
+### Step 5.1 — Create the Backup Script (backup.sh)
+
+**1.Create the script file:**
+
+```bash
+sudo nano /usr/local/bin/backup.sh
+```
+
+<img width="508" height="22" alt="image" src="https://github.com/user-attachments/assets/422ea09f-9913-4a6e-93e8-49c2f0178834" />
+
+
+**2.Add the script logic**
+
+```bash
+ #This script simulates the daily backup log as required in Sprint 3
+LOG_FILE="/var/log/samba_backup.log"
+echo "Backup Task Started: $(date)" >> $LOG_FILE
+#Add actual backup commands here (e.g., rsync or tar)
+echo "Backup Task Completed successfully." >> $LOG_FILE
+```
+<br>
+
+<img width="772" height="133" alt="image" src="https://github.com/user-attachments/assets/8a1dce2b-56f0-4d74-9d2d-c77927ffed97" />
+
+<br>
+
+**3.Set executable permissions:**
+
+```bash
+sudo chmod +x /usr/local/bin/backup.sh
+```
+<br>
+<img width="555" height="37" alt="image" src="https://github.com/user-attachments/assets/79757eda-146a-436f-a610-16bf314d207a" />
+
+
+### Step 5.2 — Schedule the Task using Crontab
+
+**1.Open the system-wide crontab for the root user:**
+
+```bash
+sudo crontab -e
+```
+
+**3.Add the scheduling line:**
+In cron syntax, this is represented as follows:
+<br>
+```bash
+00 19 * * * /usr/local/bin/backup.sh
+```
+
+00: Minute (0)
+
+19: Hour (7 PM)
+
+* * *: Every day of the month, every month, and every day of the week.
+
+
+### Step 5.3 Verification 
+
+
+Before waiting for the 7 PM trigger, run the script manually to ensure the "log command" works
+
+```bash
+
+sudo /usr/local/bin/backup.sh
+cat /var/log/samba_backup.log
+
+```
+
+
+<img width="480" height="127" alt="image" src="https://github.com/user-attachments/assets/87c517f5-fe8e-4244-88ea-416406465891" />
+
+
+
+
 
 ---
 
