@@ -2550,15 +2550,13 @@ network:
     enp0s8:
       addresses: [192.168.30.42/24]
       dhcp4: false
-EOF
-
-sudo netplan apply
 
 
+<br>
+
+<img width="703" height="510" alt="image" src="https://github.com/user-attachments/assets/cd262b4e-f4b8-48e1-a6c7-2563819f8509" />
 
 
-
-<img width="616" height="168" alt="imagen" src="https://github.com/user-attachments/assets/f3debf6c-2daf-4552-848e-e246bb7df90d" />
 
 <br>
 
