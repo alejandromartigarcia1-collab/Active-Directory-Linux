@@ -2532,7 +2532,7 @@ The configuration assigns a static IP (`192.168.30.42`) to the internal interfac
 
 <br>
 
-cat <<EOF | sudo tee /etc/netplan/00-installer-config.yaml
+```bash
 network:
   version: 2
   ethernets:
@@ -2550,7 +2550,7 @@ network:
     enp0s8:
       addresses: [192.168.30.42/24]
       dhcp4: false
-
+ ```
 
 <br>
 
