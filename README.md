@@ -1,8 +1,7 @@
-# 🐧 Linux-Sprint
+# 🐧 Linux-Sprint                Alejandro Marti Garcia
 
 > **Technical documentation** of the full configuration process for a Linux environment running Samba as an Active Directory Domain Controller. This project is structured across four sprints — each one building on the previous — covering server promotion, client integration, storage management, and inter-domain trust relationships.
 
-This document serves as a step-by-step reference guide, including commands, configuration files, expected outputs, and screenshots at every key stage of the process.
 
 <br>
 
