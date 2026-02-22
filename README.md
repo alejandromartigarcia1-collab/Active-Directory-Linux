@@ -3117,6 +3117,40 @@ Both forest and domain functional levels report `Windows 2008 R2` or higher, con
 
 ## Step 8 — Establish the Bidirectional Forest Trust
 
+### /etc/samba/smb.conf configuration
+
+**LS12**
+<img width="801" height="145" alt="image" src="https://github.com/user-attachments/assets/8cbc436b-f74c-4164-9db4-cc55983ece73" />
+
+**LS120**
+
+<img width="810" height="152" alt="image" src="https://github.com/user-attachments/assets/0d8aa09d-2836-484a-8cd8-4e4e6e412621" />
+
+### /etc/resolv.conf configuration
+
+**LS12**
+
+<img width="203" height="40" alt="image" src="https://github.com/user-attachments/assets/23437d60-f18e-45b2-9cc8-0cb5c8637364" />
+
+**LS120**
+
+<img width="222" height="41" alt="image" src="https://github.com/user-attachments/assets/dab39629-def4-42fc-aefc-333959c5e310" />
+
+
+### /etc/hosts configuration
+
+**LS12**
+
+<img width="295" height="67" alt="image" src="https://github.com/user-attachments/assets/7a1545d5-aa4d-4502-8659-2de9bdfe743b" />
+
+
+**LS120**
+
+<img width="307" height="43" alt="image" src="https://github.com/user-attachments/assets/3dd63b00-7b7c-4128-a04f-0641c4354e7f" />
+
+
+
+
 With both DCs verified and operational, we create the trust. A **forest trust** is the highest level of trust between two AD domains — it grants users in either domain the ability to be authenticated by the other domain's DC and access resources across the boundary.
 
 **Run this command from the LS12 Domain Controller (the `lab12.lan` side):**
