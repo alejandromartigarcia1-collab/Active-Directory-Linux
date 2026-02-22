@@ -2,7 +2,7 @@
 
 ### Alejandro Marti Garcia
 
-> **Technical documentation** of the full configuration process for a Linux environment running Samba as an Active Directory Domain Controller. This project is structured across four sprints — each one building on the previous — covering server promotion, client integration, storage management, and inter-domain trust relationships.
+> **Technical documentation** of the full configuration process for a Linux environment running Samba as an Active Directory Domain Controller. This project is structured across four sprints, with steps, guides, etc..
 
 
 <br>
@@ -3340,4 +3340,4 @@ The forest trust is fully operational. Users from `lab120.lan` can now authentic
 
 <br>
 
-*📄 Linux-Sprint — Technical Documentation for Samba Active Directory on Ubuntu Server*
+*📄 Linux-Sprint — Alejandro Marti*
