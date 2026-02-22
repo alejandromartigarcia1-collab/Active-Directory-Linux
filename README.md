@@ -1889,7 +1889,7 @@ The output lists all active mount options. We confirm `acl` and `user_xattr` are
 
 ---
 
-## 2. 📁 Directory Structure and Network Shares
+## 2. 📁 Directory Structure and Network Shares   
 
 ### Step 2.1 — Create the Department Directory Hierarchy
 
@@ -2052,6 +2052,161 @@ sudo apt update && sudo apt install acl -y
 With ACL support installed, administrators can use `setfacl` to grant or revoke permissions for specific users or groups, and `getfacl` to read the current permission set on any file or directory. This goes far beyond what standard `chmod` can achieve.
 
 <br>
+
+
+### Step 3.2 — Assign Owners to Folders
+Before applying ACLs, let's make sure that the corresponding AD group is the "primary" owner of each directory.
+
+We changed the owner group to the corresponding AD groups
+
+```bash
+sudo chown :Students /srv/samba/Data/FinanceDocs
+sudo chown :IT_Admins /srv/samba/Data/HRDocs
+sudo chown :"Domain Users" /srv/samba/Data/Public
+```
+<br>
+<img width="621" height="66" alt="image" src="https://github.com/user-attachments/assets/eedb2f51-54ac-4827-b572-bfc4734c0f23" />
+
+
+### Step 3.3 — Application of Advanced ACLs
+
+**1. FinanceDocs: Read/Write**
+
+We cleaned up and assigned rwx to Students and Domain Admins
+
+```bash
+sudo setfacl -b /srv/samba/Data/FinanceDocs
+sudo setfacl -m g:Students:rwx /srv/samba/Data/FinanceDocs
+sudo setfacl -m g:"Domain Admins":rwx /srv/samba/Data/FinanceDocs
+```
+<br>
+
+<img width="776" height="80" alt="image" src="https://github.com/user-attachments/assets/9e306665-d78f-4ad4-97e8-76f60248b0c7" />
+
+
+Inheritance so that new files follow the same rule
+
+```bash
+sudo setfacl -d -m g:Students:rwx /srv/samba/Data/FinanceDocs
+sudo setfacl -d -m g:"Domain Admins":rwx /srv/samba/Data/FinanceDocs
+```
+
+<img width="792" height="37" alt="image" src="https://github.com/user-attachments/assets/62920cb4-6604-4f6a-855c-d9d03faa271e" />
+
+
+**2. HRDocs: Modification Permission**
+
+```bash
+sudo setfacl -b /srv/samba/Data/HRDocs
+sudo setfacl -m g:IT_Admins:rwx /srv/samba/Data/HRDocs
+sudo setfacl -m g:"Domain Admins":rwx /srv/samba/Data/HRDocs
+sudo setfacl -d -m g:IT_Admins:rwx /srv/samba/Data/HRDocs
+sudo setfacl -d -m g:"Domain Admins":rwx /srv/samba/Data/HRDocs
+```
+
+<br>
+<img width="742" height="105" alt="image" src="https://github.com/user-attachments/assets/609cba88-6b54-481d-a2dd-f8c8729a1e5a" />
+
+
+**3. Public: Write Only**
+
+```bash
+sudo setfacl -b /srv/samba/Data/Public
+sudo setfacl -m g:"Domain Users":rx /srv/samba/Data/Public
+sudo setfacl -m g:"Domain Admins":rwx /srv/samba/Data/Public
+sudo setfacl -d -m g:"Domain Users":rx /srv/samba/Data/Public
+sudo setfacl -d -m g:"Domain Admins":rwx /srv/samba/Data/Public
+```
+
+<br>
+
+<img width="747" height="106" alt="image" src="https://github.com/user-attachments/assets/12c98d89-1691-43f4-a3bb-873a4761795f" />
+
+
+### 3.4 Security Checks
+
+**Step 3.4.1 — Visual Audit of ACLs**
+
+```bash
+getfacl /srv/samba/Data/FinanceDocs
+getfacl /srv/samba/Data/HRDocs
+getfacl /srv/samba/Data/Public
+```
+
+<br>
+<img width="515" height="347" alt="image" src="https://github.com/user-attachments/assets/67887624-0636-4a6a-9266-4a46060d3fb0" />
+
+<br>
+
+<img width="557" height="367" alt="image" src="https://github.com/user-attachments/assets/f27f2d4c-0a00-4a69-8602-4d9b18ded1de" />
+
+<br>
+
+<img width="546" height="372" alt="image" src="https://github.com/user-attachments/assets/cec89cd2-a8f1-407b-badb-4ea101818b4d" />
+
+<br>
+
+
+
+
+
+
+
+
+**Step 3.4.3 — Finance Docs Checks**
+
+Test write access with a Students user
+
+```bash
+smbclient //<IP_SERVER>/FinanceDocs -U "Charlie"
+```
+
+<img width="690" height="207" alt="image" src="https://github.com/user-attachments/assets/88f3fcaa-31d8-4d3e-aade-cc2d7d3bc64d" />
+
+Within the smb prompt: \>, try creating a directory:
+
+```bash
+mkdir prueba_linux
+ls
+```
+
+The mkdir command should work in FinanceDocs because Students have write permissions.
+
+**Verify denial of access**
+```bash
+smbclient //<IP_SERVIDOR>/HRDocs -U "Charlie"
+```
+
+<img width="546" height="53" alt="image" src="https://github.com/user-attachments/assets/6761d7db-df9b-498c-a72d-d4779048c89d" />
+
+Expected result: When attempting to list or log in, you should receive an NT_STATUS_ACCESS_DENIED error.
+
+And now we would perform the check with different users from other groups and folders, seeing that the result is the same and that the ACL configuration is correct
+
+
+
+**IT_Admin User (Alice)**
+
+Have write permissions
+<br>
+<img width="697" height="182" alt="image" src="https://github.com/user-attachments/assets/d8998692-1077-4a43-885a-85d0a25cdbac" />
+
+
+You cannot access the FianceDocs folder
+<br>
+
+<img width="581" height="62" alt="image" src="https://github.com/user-attachments/assets/48135e2e-c5d1-4378-a2ee-b942ae34bea7" />
+
+
+**Domain Users**
+They can access the Public folder
+<br>
+
+<img width="701" height="400" alt="image" src="https://github.com/user-attachments/assets/f234f304-ca0c-4f43-9bdc-dfb74cce08ff" />
+
+<br>
+
+<img width="547" height="72" alt="image" src="https://github.com/user-attachments/assets/fd8b40c3-b77d-46c5-88d9-9c30430e2bbb" />
 
 ---
 
